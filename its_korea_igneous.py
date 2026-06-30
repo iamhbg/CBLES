@@ -601,7 +601,11 @@ def _voronoi_cells_with_neighbors(points):
 def _resolve_edge_amplitude(cell_idx, neighbor_idx, habit_by_point, is_glass_by_point,
                              low_amp, high_amp, glass_amp, base_seed):
     """
-    한 변의 굴곡 폭(부호 포함)을 정한다.
+    한 변의 굴곡 폭(부호 포함)과 스타일 분류("facet"/"irregular"/"glass")를 함께 정한다.
+    스타일 분류는 호출부(_build_wavy_polygon)가 테두리 선 굵기·진하기를 다르게
+    그리는 데 쓴다 — 굴곡 폭 차이만으로는 사람 눈에 거의 안 띄어서(실측 후 확인된
+    문제), 결정면처럼 보이는 변은 굵고 진하게, 불규칙한 변은 거의 안 보이게 옅게
+    그려 자형/반자형/타형의 차이를 한눈에 알아볼 수 있게 한다.
 
     실제 결정형 분류(자형/반자형/타형)는 "알갱이 하나가 통째로 둥글다/각지다"가
     아니라 "그 알갱이의 변 하나하나가 결정면(곧음)인지 이웃에 밀려난 불규칙한
@@ -636,11 +640,15 @@ def _resolve_edge_amplitude(cell_idx, neighbor_idx, habit_by_point, is_glass_by_
     if is_glass_edge:
         # 유리질(비정질)은 결정면 자체가 없으므로 거의 매끈하게(아주 약한 불규칙함만) 그린다.
         base_amp = glass_amp
+        style = "glass"
     else:
         facet_probability = (habit_a + habit_b) / 2.0
-        base_amp = low_amp if facet_roll < facet_probability else high_amp
+        if facet_roll < facet_probability:
+            base_amp, style = low_amp, "facet"
+        else:
+            base_amp, style = high_amp, "irregular"
 
-    return base_amp * sign * magnitude_factor
+    return base_amp * sign * magnitude_factor, style
 
 
 def _wavy_edge_points(p_a, p_b, signed_amplitude_fraction):
@@ -684,22 +692,36 @@ def _wavy_edge_points(p_a, p_b, signed_amplitude_fraction):
 
 def _build_wavy_polygon(cell_idx, base_verts, neighbors, habit_by_point, is_glass_by_point,
                          low_amp, high_amp, glass_amp, base_seed):
-    """직선 변으로 된 보로노이 셀 정점에, 변마다 굴곡점을 끼워 넣어 자연스러운 결정 경계로 만든다."""
+    """
+    직선 변으로 된 보로노이 셀 정점에, 변마다 굴곡점을 끼워 넣어 자연스러운 결정 경계로 만든다.
+
+    Returns
+    -------
+    (numpy.ndarray or None, list)
+        채우기(facecolor)용 닫힌 다각형 정점 배열과, 변별로 따로 그릴 테두리 선분
+        목록 [(points, style), ...] (style 은 "facet"/"irregular"/"glass"). 채우기는
+        셀 단위로 한 번에, 테두리는 변 단위 스타일로 따로 그려야 자형(결정면)
+        변은 굵고 진하게, 타형(불규칙) 변은 옅게 — 라는 대비를 낼 수 있다.
+    """
     if base_verts is None or len(base_verts) < 3:
-        return None
+        return None, []
     n = len(base_verts)
-    out = []
+    fill_pts = []
+    edge_segments = []
     for k in range(n):
         p_a = base_verts[k]
         p_b = base_verts[(k + 1) % n]
         neighbor_idx = neighbors[k] if neighbors is not None else None
-        amp = _resolve_edge_amplitude(
+        amp, style = _resolve_edge_amplitude(
             cell_idx, neighbor_idx, habit_by_point, is_glass_by_point,
             low_amp, high_amp, glass_amp, base_seed,
         )
-        out.append(p_a)
-        out.extend(_wavy_edge_points(p_a, p_b, amp))
-    return _clip_polygon_to_unit_square(np.array(out))
+        mid_pts = _wavy_edge_points(p_a, p_b, amp)
+        fill_pts.append(p_a)
+        fill_pts.extend(mid_pts)
+        edge_segments.append((np.array([p_a, *mid_pts, p_b]), style))
+    fill_poly = _clip_polygon_to_unit_square(np.array(fill_pts))
+    return fill_poly, edge_segments
 
 
 def _jittered_grid_points(n_target, rng, margin=0.02):
@@ -799,6 +821,7 @@ def render_grain_texture_figure(sio2, depth_km):
         return None
 
     from matplotlib.patches import Polygon, Rectangle
+    from matplotlib.collections import LineCollection
 
     # 1) 바탕(암석) 색 — SiO2 함량에 따라 어두운색↔밝은색으로 연속 보간
     t_color = (sio2 - SIO2_SLIDER_MIN) / (SIO2_SLIDER_MAX - SIO2_SLIDER_MIN)
@@ -917,19 +940,28 @@ def render_grain_texture_figure(sio2, depth_km):
     # 굴곡 폭(변 끝점 사이 거리에 대한 비율). low=결정면처럼 거의 곧음,
     # high=이웃에 밀려난 불규칙한 면, glass=결정 구조가 없는 유리질의 매끈한 경계.
     # (이전에 0.05~0.31 폭을 쓴 적이 있었는데 모든 변이 동시에 부풀어 다각형이
-    # 아니라 자갈/기포가 뭉친 것처럼 보이는 오개념을 만들어, 1/3 수준으로 낮췄다.)
-    low_amp, high_amp, glass_amp = 0.012, 0.097, 0.006
+    # 아니라 자갈/기포가 뭉친 것처럼 보이는 오개념을 만들어, 낮춰 잡았다.)
+    low_amp, high_amp, glass_amp = 0.006, 0.10, 0.006
 
     fig, ax = plt.subplots(figsize=(3.0, 3.0), dpi=110)
     fig.patch.set_alpha(0.0)
     ax.add_patch(Rectangle((0, 0), 1, 1, facecolor=bg_rgb, zorder=0))
+
+    # 변 단위 굴곡 폭 차이는(특히 작은 알갱이에서) 사람 눈에 거의 안 띈다는
+    # 피드백으로, 자형/반자형/타형의 핵심 신호를 "테두리 선의 굵기·진하기"로
+    # 옮긴다 — 결정면(facet)으로 판정된 변은 굵고 진하게, 불규칙(irregular)한
+    # 변은 거의 안 보이게 옅게 그려 한 알갱이 안에서도 그 차이가 한눈에 보이게
+    # 한다. 채우기(면)와 테두리(선)를 분리해서 그려야 변마다 다른 선 스타일을
+    # 줄 수 있어, 채우기는 셀 단위로 먼저 모두 그린 뒤 테두리는 스타일별로
+    # LineCollection 3개로 묶어 한 번에 그린다(개별 ax.plot 수천 번보다 훨씬 빠름).
+    facet_segments, irregular_segments, glass_segments = [], [], []
 
     shade_rng = np.random.default_rng(seed=seed ^ 0x5BD1E995)
     for i in range(n_total):
         poly_pts = cell_polygons[i]
         if poly_pts is None or len(poly_pts) < 3:
             continue
-        wavy_poly = _build_wavy_polygon(
+        wavy_poly, edge_segments = _build_wavy_polygon(
             i, poly_pts, cell_neighbors[i], habit_by_point, is_glass_by_point,
             low_amp, high_amp, glass_amp, seed,
         )
@@ -938,20 +970,44 @@ def render_grain_texture_figure(sio2, depth_km):
         if is_phenocryst[i]:
             # 반정(큰 결정)은 바탕(석기)보다 명암 편차를 줄여 더 "또렷한 낱개 결정" 느낌을 준다.
             shade = shade_rng.uniform(-0.10, 0.10)
-            edge_alpha = 0.34
         elif is_glass_by_point[i]:
-            # 유리질은 광학적으로 더 균질해 보이므로 알갱이별 명암 편차·테두리를 더 옅게.
+            # 유리질은 광학적으로 더 균질해 보이므로 알갱이별 명암 편차를 더 옅게.
             shade = shade_rng.uniform(-0.07, 0.07)
-            edge_alpha = 0.07
         else:
             shade = shade_rng.uniform(-0.18, 0.18)
-            edge_alpha = 0.26
         grain_rgb = tuple(min(max(c + shade, 0.0), 1.0) for c in bg_rgb)
+        # 채우기 색과 같은 색으로 아주 얇게 테두리를 둘러, 이웃 셀과 좌표가
+        # 정확히 맞물려 있어도 안티앨리어싱 때문에 생기는 미세한 이음매를 가린다
+        # (실제 굴곡 스타일 선은 아래에서 별도로 덧그린다).
         ax.add_patch(
             Polygon(wavy_poly, closed=True, facecolor=grain_rgb,
-                    edgecolor=(0, 0, 0, edge_alpha), linewidth=0.45,
+                    edgecolor=grain_rgb, linewidth=0.3,
                     joinstyle="round", zorder=1)
         )
+        for seg_points, style in edge_segments:
+            if style == "facet":
+                facet_segments.append(seg_points)
+            elif style == "glass":
+                glass_segments.append(seg_points)
+            else:
+                irregular_segments.append(seg_points)
+
+    if irregular_segments:
+        ax.add_collection(LineCollection(
+            irregular_segments, colors=[(0, 0, 0, 0.12)], linewidths=0.35, zorder=2,
+        ))
+    if glass_segments:
+        ax.add_collection(LineCollection(
+            glass_segments, colors=[(0, 0, 0, 0.04)], linewidths=0.3, zorder=2,
+        ))
+    if facet_segments:
+        # 결정면(자형 성향) 변은 가장 마지막(zorder 최상위)에 굵고 진하게 그려
+        # "이 알갱이는 면이 잘 발달했다"는 인상이 또렷이 남게 한다.
+        ax.add_collection(LineCollection(
+            facet_segments, colors=[(0, 0, 0, 0.55)], linewidths=0.9,
+            capstyle="round", zorder=3,
+        ))
+
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.set_aspect("equal")
