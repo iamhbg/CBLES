@@ -471,13 +471,20 @@ def render_grain_texture_figure(sio2, depth_km):
     ※ 중요: 이 그림은 어디까지나 "보조 시각화"다. 화면에 텍스트로 표시되는 분류
     라벨(세립질/반상질/조립질, 현무암질/안산암질/유문암질 등)은 §2의 임계값
     (SIO2_MAFIC_MAX/SIO2_FELSIC_MIN, DEPTH_SHALLOW_MAX)에 따라 여전히 단계적으로
-    결정된다 — 이 함수는 그 분류 자체를 바꾸지 않는다. 다만 그림 속 알갱이의
-    "색"과 "크기·균일도"만큼은 슬라이더 값에 비례해 매끄럽게(연속적으로) 변하도록
-    만들어, 단계 경계에서 화면이 뚝뚝 끊기는 느낌을 줄인다.
+    결정된다 — 이 함수는 그 분류 자체를 바꾸지 않는다. 또한 "자형/반자형/타형"
+    같은 결정형 용어 자체를 학생에게 노출하지 않는다(교육과정 범위 밖) — 다만
+    실제 암석 사진과 동떨어진 단순 원으로 그리면 오개념을 만들 수 있어, 그림 자체는
+    아래 원리로 알갱이 "모양"까지 더 사실적으로 표현한다.
       - 색: SiO2 값을 SIO2_SLIDER_MIN~MAX 구간에서 MAFIC_RGB↔FELSIC_RGB로 선형 보간.
       - 평균 알갱이 크기: 깊이가 깊을수록 연속적으로 굵어짐(냉각이 느릴수록 큰 결정).
       - 알갱이 크기의 편차(균일도): 천부 관입 구간(0~3km) 중간에서 가장 커지는 종형
         곡선으로, "반상질(굵은 결정+가는 바탕이 혼재)" 느낌을 연속적으로 표현한다.
+      - 알갱이 모양(결정형): 원이 아니라 불규칙 다각형으로 그린다. 냉각이 느릴수록
+        (깊을수록) 결정이 자랄 시간이 많아 각진 다각형(자형에 가까움) 비율이
+        높아지고, 냉각이 빠를수록(지표) 모서리가 뭉개진 둥근 불규칙 다각형
+        (타형에 가까움) 비율이 높아지도록 알갱이별 "각짐 정도"를 깊이에 따라
+        연속적으로(개체별 무작위 편차 포함) 보간한다. 실제 암석도 한 시료 안에
+        자형~타형 알갱이가 섞여 있으므로, 같은 깊이에서도 알갱이마다 편차를 둔다.
 
     Returns
     -------
@@ -487,7 +494,7 @@ def render_grain_texture_figure(sio2, depth_km):
     if not VISUAL_AVAILABLE:
         return None
 
-    from matplotlib.patches import Circle, Rectangle
+    from matplotlib.patches import Polygon, Rectangle
 
     # 1) 바탕(암석) 색 — SiO2 함량에 따라 어두운색↔밝은색으로 연속 보간
     t_color = (sio2 - SIO2_SLIDER_MIN) / (SIO2_SLIDER_MAX - SIO2_SLIDER_MIN)
@@ -522,14 +529,51 @@ def render_grain_texture_figure(sio2, depth_km):
     ys = rng.uniform(0.05, 0.95, size=n_grains)
     grain_shade = rng.uniform(-0.18, 0.18, size=n_grains)  # 알갱이별 명암 차이(입자감)
 
+    # 4) 결정형(자형↔타형) — 깊이가 깊을수록(냉각이 느릴수록) 평균적으로 더 각진
+    #    다각형(자형)에 가까워지고, 얕을수록 모서리가 뭉개진 둥근 다각형(타형)에
+    #    가까워진다. 알갱이별로 무작위 편차를 두어 한 그림 안에서도 자형~타형이
+    #    섞여 보이도록 한다(실제 암석의 모습과 동일).
+    mean_euhedral = 0.12 + 0.7 * (t_depth ** 0.6)
+    habit = np.clip(rng.normal(loc=mean_euhedral, scale=0.22, size=n_grains), 0.0, 1.0)
+    irregularity = 1.0 - habit  # 0=각진 자형, 1=둥글게 뭉개진 타형
+
     fig, ax = plt.subplots(figsize=(3.0, 3.0), dpi=110)
     fig.patch.set_alpha(0.0)
     ax.add_patch(Rectangle((0, 0), 1, 1, facecolor=bg_rgb, zorder=0))
-    for x, y, r, shade in zip(xs, ys, radii, grain_shade):
+    for x, y, r, shade, irr in zip(xs, ys, radii, grain_shade, irregularity):
         grain_rgb = tuple(min(max(c + shade, 0.0), 1.0) for c in bg_rgb)
+        # 자형(irr↓): 꼭짓점 4~6개 + 변 거의 일정 → 곧은 변·뚜렷한 모서리(결정면 느낌).
+        # 타형(irr↑): 꼭짓점 다수(부드러운 곡선 근사) + 저주파(완만한) 반지름 변화로
+        #   각진 데 없이 둥글게 뭉개진 윤곽(틈을 메운 결정 느낌)을 만든다.
+        #   (개별 꼭짓점을 독립적으로 들쭉날쭉하게 흔들면 "별 모양"처럼 뾰족해져서
+        #   타형의 실제 느낌과 달라지므로, 인접한 꼭짓점끼리 연속적으로 이어지는
+        #   저주파 사인 곡선을 섞어 매끄러운 굴곡만 생기도록 한다.)
+        n_vertices = int(round(6 + irr * 22))
+        base_angle = rng.uniform(0, 2 * np.pi)
+        theta = np.linspace(0, 2 * np.pi, n_vertices, endpoint=False) + base_angle
+
+        k1 = rng.integers(2, 4)
+        k2 = k1 + rng.integers(1, 3)
+        phase1 = rng.uniform(0, 2 * np.pi)
+        phase2 = rng.uniform(0, 2 * np.pi)
+        smooth_bulge = 0.6 * np.sin(k1 * theta + phase1) + 0.4 * np.sin(k2 * theta + phase2)
+        facet_jitter = rng.uniform(-1.0, 1.0, size=n_vertices)
+        fine_noise = rng.uniform(-1.0, 1.0, size=n_vertices)
+
+        radius_factor = (
+            1.0
+            + irr * 0.30 * smooth_bulge          # 타형일수록: 완만하고 둥근 굴곡
+            + (1.0 - irr) * 0.12 * facet_jitter   # 자형일수록: 거의 일정(곧은 변)
+            + 0.04 * fine_noise                   # 항상 약간의 자연스러운 불완전함
+        )
+        vertex_radii = r * np.clip(radius_factor, 0.45, 1.6)
+        verts = np.column_stack([
+            x + vertex_radii * np.cos(theta),
+            y + vertex_radii * np.sin(theta),
+        ])
         ax.add_patch(
-            Circle((x, y), r, facecolor=grain_rgb, edgecolor=(0, 0, 0, 0.25),
-                   linewidth=0.4, zorder=1)
+            Polygon(verts, closed=True, facecolor=grain_rgb, edgecolor=(0, 0, 0, 0.28),
+                    linewidth=0.4, joinstyle="round", zorder=1)
         )
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
