@@ -87,10 +87,12 @@
 
 - **코드 다이어트 금지**: 함수 생략·축약 금지. 모든 함수를 완전히 구현하고 예외 처리를 철저히 한다. (사용자 명시 요구)
 - **단일 파일 아키텍처** 유지.
-- **우아한 degradation**: `GENAI_AVAILABLE` 플래그로 라이브러리 누락 시에도 앱이 죽지 않게. API 키 탐색 순서는 **사이드바 입력 > `st.secrets` > 환경변수(`GEMINI_API_KEY`/`GOOGLE_API_KEY`)**.
-- **`.env` 로딩**: 앱 시작 시 `python-dotenv`의 `load_dotenv()`로 `.env`의 `GEMINI_API_KEY`를 `os.environ`에 적용한다(같은 패턴으로 `python-dotenv` 미설치 시에도 죽지 않게 try/except 처리). 이는 위 우선순위의 "환경변수" 단계를 채우는 것일 뿐 — 사이드바 입력이 항상 더 우선한다. **`.env`는 절대 커밋하지 않는다**(`.gitignore`에 명시됨). 키 예시 형식은 `.env.example`에 둔다.
+- **우아한 degradation**: `GENAI_AVAILABLE` 플래그로 라이브러리 누락 시에도 앱이 죽지 않게.
+- **API 키는 학생이 입력하지 않는다.** 사이드바의 "Gemini API 키" 입력 칸은 **제거됨**(의도된 변경 — 학생용 배포 앱이라 개인 키를 받을 필요가 없음). `resolve_api_key()`는 파라미터 없이 호출되며, 탐색 순서는 **`st.secrets` > 환경변수(`GEMINI_API_KEY`/`GOOGLE_API_KEY`, `.env` 포함)** 두 단계뿐이다. 사이드바 입력 칸을 다시 추가하지 말 것 — 되돌리려면 먼저 사용자에게 확인.
+- **`.env` 로딩**: 앱 시작 시 `python-dotenv`의 `load_dotenv()`로 `.env`의 `GEMINI_API_KEY`를 `os.environ`에 적용한다(같은 패턴으로 `python-dotenv` 미설치 시에도 죽지 않게 try/except 처리). 이는 위 우선순위의 "환경변수" 단계를 채우는 로컬 전용 경로다. **`.env`는 절대 커밋하지 않는다**(`.gitignore`에 명시됨). 키 예시 형식은 `.env.example`에 둔다. **Streamlit Cloud 배포 시에는 `.env`가 서버에 존재하지 않으므로, 앱 대시보드의 Secrets에 `GEMINI_API_KEY`를 설정해야 `st.secrets` 경로로 키가 공급된다.**
 - **한국어 유지**: 주석·UI 문자열은 한국어로.
-- `st.chat_input`은 컬럼 밖(앱 루트 최하단)에 둔다 — Streamlit 배치 제약 때문. 컬럼 안으로 옮기지 말 것.
+- `st.chat_input`은 컬럼 밖(앱 루트 최하단)에 둔다 — Streamlit 배치 제약(컬럼 안에 넣어도 항상 앱 맨 아래 전체 폭에 고정됨) 때문. 컬럼 안으로 옮기지 말 것. 대신 `inject_custom_css()`에서 `[data-testid="stBottomBlockContainer"]`를 `width: calc(50% - 1rem)` + `margin-left: auto`로 강제해 시각적으로 우측(AI 튜터) 컬럼 폭에 맞춘다. **이 testid는 Streamlit 내부 구현이라 버전이 바뀌면 깨질 수 있음** — 업그레이드 후 채팅 입력창이 다시 전체 폭으로 펼쳐지면 이 선택자부터 확인할 것.
+- **결정 텍스처(조직) 시각화**: `render_grain_texture_figure()`가 SiO2·깊이로부터 matplotlib Figure를 절차적으로 생성한다(`VISUAL_AVAILABLE` 플래그로 numpy/matplotlib 누락 시 우아하게 degrade — 그림 없이 텍스트만 표시). **그림의 색·알갱이 크기는 연속 보간**이지만 **텍스트 분류 라벨(세립질/반상질/조립질, 현무암질/유문암질 등)은 §2의 단계적 임계값을 그대로 따른다** — 이 함수가 분류 자체를 바꾸지 않도록 주의. 알갱이 생성에는 `(sio2, depth_km)` 기반 고정 시드를 써서 재실행 시 그림이 깜빡이지 않게 한다.
 
 ---
 
@@ -106,8 +108,8 @@
 
 ## 6. 코드 지도 (단일 파일 내 책임 영역)
 
-- **설정/상수**: `DEFAULT_MODEL`, `SELECTABLE_MODELS`, SiO₂·깊이 임계 상수, `SYSTEM_PROMPT`
-- **시뮬레이터 코어**: `classify_magma_composition` · `infer_generation_environment` · `classify_cooling` · `determine_rock_name` · `get_korea_context` · `compute_simulation`
+- **설정/상수**: `DEFAULT_MODEL`, `SELECTABLE_MODELS`, SiO₂·깊이 임계 상수, `MAFIC_RGB`/`FELSIC_RGB`(텍스처 시각화 색), `SYSTEM_PROMPT`
+- **시뮬레이터 코어**: `classify_magma_composition` · `infer_generation_environment` · `classify_cooling` · `determine_rock_name` · `get_korea_context` · `compute_simulation` · `render_grain_texture_figure`(결정 텍스처 시각화, `VISUAL_AVAILABLE`일 때만)
 - **Gemini 연동**: `resolve_api_key` · `build_simulator_context` · `convert_history_for_gemini` · `request_tutor_reply`
 - **UI**: `inject_custom_css` · `render_sidebar` · `render_curriculum_header` · `render_simulator` · `render_chat_panel` · `main`
 
@@ -117,7 +119,7 @@
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # .env 파일에 GEMINI_API_KEY=발급받은_키 입력 (또는 앱 사이드바에 직접 입력)
+cp .env.example .env   # .env 파일에 GEMINI_API_KEY=발급받은_키 입력 (사이드바 입력 칸은 없음 — §4 참고)
 streamlit run its_korea_igneous.py
 
 # 헤드리스 부팅 점검 (변경 후 회귀 확인용)
