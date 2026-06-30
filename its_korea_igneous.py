@@ -518,22 +518,30 @@ def _clip_polygon_to_unit_square(poly_points):
     return np.array(pts)
 
 
-def _bounded_voronoi_regions(points):
+def _voronoi_cells_with_neighbors(points):
     """
     scipy.spatial.Voronoi 는 경계가 없는(무한히 뻗는) 영역을 만들 수 있으므로,
     입력 점들을 단위 정사각형의 4변에 대해 거울 대칭시킨 "유령 점"을 추가해
     모든 실제 점의 보로노이 영역이 정사각형 안에서 닫히도록 강제한다(표준 기법).
 
+    단순히 셀 모양만 구하는 것이 아니라, 각 변이 "어느 이웃 알갱이와 맞닿아
+    있는지"도 함께 돌려준다(scipy의 ridge_points/ridge_vertices를 이용한 실제
+    인접 관계). 이는 한 알갱이 안에서도 변마다 자형(곧은 결정면)/타형(불규칙한
+    면)이 섞여 나타나는 실제 결정형을 표현하려면, 그 변을 "곧게 그릴지 불규칙하게
+    그릴지"를 양쪽 알갱이의 결정형 값으로부터 함께 결정해야 하기 때문이다.
+
     Returns
     -------
-    list of (numpy.ndarray or None)
-        입력 points 와 같은 순서로, 각 점에 대응하는 클리핑된 보로노이 셀 정점 배열.
-        영역을 만들 수 없는 경우(축퇴 등) 해당 위치는 None.
+    (list of (numpy.ndarray or None), list of (list or None))
+        cell_polygons[i] : 점 i 의 (아직 직선인) 보로노이 셀 정점 배열.
+        cell_neighbors[i] : cell_polygons[i] 의 각 변(k번째 정점→k+1번째 정점)에
+            대응하는 이웃 점 인덱스 리스트. 캔버스 경계에 닿아 실제 이웃이 없으면 None.
+        둘 다 영역을 만들 수 없는 경우(축퇴 등) 해당 위치는 None.
     """
     points = np.asarray(points, dtype=float)
     n = len(points)
     if n == 0:
-        return []
+        return [], []
 
     mirror_left = points.copy(); mirror_left[:, 0] = -points[:, 0]
     mirror_right = points.copy(); mirror_right[:, 0] = 2.0 - points[:, 0]
@@ -544,38 +552,111 @@ def _bounded_voronoi_regions(points):
     try:
         vor = Voronoi(all_points)
     except Exception:
-        return [None] * n
+        return [None] * n, [None] * n
 
-    regions = []
+    # 변(두 보로노이 정점으로 이루어진 ridge) -> 그 변을 사이에 둔 두 점 인덱스.
+    ridge_lookup = {}
+    for (pa, pb), (va, vb) in zip(vor.ridge_points, vor.ridge_vertices):
+        if va == -1 or vb == -1:
+            continue
+        ridge_lookup[frozenset((va, vb))] = (int(pa), int(pb))
+
+    cell_polygons = []
+    cell_neighbors = []
     for i in range(n):
         try:
             region_index = vor.point_region[i]
             region = vor.regions[region_index]
             if not region or -1 in region:
-                regions.append(None)
+                cell_polygons.append(None)
+                cell_neighbors.append(None)
                 continue
             verts = vor.vertices[region]
             centroid = verts.mean(axis=0)
             angles = np.arctan2(verts[:, 1] - centroid[1], verts[:, 0] - centroid[0])
-            verts = verts[np.argsort(angles)]
-            clipped = _clip_polygon_to_unit_square(verts)
-            regions.append(clipped)
+            order = np.argsort(angles)
+            ordered_region = [region[k] for k in order]
+            ordered_verts = verts[order]
+
+            m = len(ordered_region)
+            neighbors = []
+            for k in range(m):
+                pair = ridge_lookup.get(frozenset((ordered_region[k], ordered_region[(k + 1) % m])))
+                if pair is None:
+                    neighbors.append(None)
+                    continue
+                other = pair[0] if pair[1] == i else (pair[1] if pair[0] == i else None)
+                # 유령(거울) 점이면(인덱스 >= n) 실제 이웃 알갱이가 아니라 캔버스
+                # 경계와 맞닿은 변이므로 이웃 없음(None)으로 처리한다.
+                neighbors.append(other if (other is not None and other < n) else None)
+
+            cell_polygons.append(ordered_verts)
+            cell_neighbors.append(neighbors)
         except Exception:
-            regions.append(None)
-    return regions
+            cell_polygons.append(None)
+            cell_neighbors.append(None)
+    return cell_polygons, cell_neighbors
 
 
-def _wavy_edge_points(p_a, p_b, wavy_fraction, base_seed):
+def _resolve_edge_amplitude(cell_idx, neighbor_idx, habit_by_point, is_glass_by_point,
+                             low_amp, high_amp, glass_amp, base_seed):
+    """
+    한 변의 굴곡 폭(부호 포함)을 정한다.
+
+    실제 결정형 분류(자형/반자형/타형)는 "알갱이 하나가 통째로 둥글다/각지다"가
+    아니라 "그 알갱이의 변 하나하나가 결정면(곧음)인지 이웃에 밀려난 불규칙한
+    면인지"의 혼합이다. 그래서 변마다 독립적으로 "이 변은 결정면처럼 그릴지"를
+    동전 던지듯 정하되, 그 확률을 이 변을 공유하는 두 알갱이의 결정형 값
+    평균으로 잡는다 — 자형 알갱이끼리 맞닿으면 곧은 면이 나오기 쉽고, 자형과
+    타형이 맞닿으면 그 경계는 타형 쪽으로 밀리며, 같은 알갱이라도 이웃이
+    바뀌면 변의 성격도 달라진다(실제 박편 사진처럼 한 알갱이 안에 곧은 면과
+    불규칙한 면이 섞여 보인다 = 반자형).
+
+    key 를 (min(cell_idx, neighbor_idx), max(...)) 로 정규화하므로, 이 변을
+    공유하는 두 알갱이가 각자의 관점에서 이 함수를 호출해도 완전히 같은
+    난수열을 얻어 — 같은 굴곡 폭·부호가 나와 셀 사이에 틈이나 겹침이 생기지 않는다.
+    """
+    habit_a = float(habit_by_point[cell_idx])
+    if neighbor_idx is None:
+        key = (cell_idx, -1)
+        habit_b = habit_a
+    else:
+        key = (min(cell_idx, neighbor_idx), max(cell_idx, neighbor_idx))
+        habit_b = float(habit_by_point[neighbor_idx])
+
+    edge_seed = hash((key, base_seed)) & 0xFFFFFFFF
+    edge_rng = np.random.default_rng(seed=edge_seed)
+    sign = float(edge_rng.choice([-1.0, 1.0]))
+    magnitude_factor = float(edge_rng.uniform(0.55, 1.0))
+    facet_roll = float(edge_rng.random())
+
+    is_glass_edge = bool(is_glass_by_point[cell_idx]) or (
+        neighbor_idx is not None and bool(is_glass_by_point[neighbor_idx])
+    )
+    if is_glass_edge:
+        # 유리질(비정질)은 결정면 자체가 없으므로 거의 매끈하게(아주 약한 불규칙함만) 그린다.
+        base_amp = glass_amp
+    else:
+        facet_probability = (habit_a + habit_b) / 2.0
+        base_amp = low_amp if facet_roll < facet_probability else high_amp
+
+    return base_amp * sign * magnitude_factor
+
+
+def _wavy_edge_points(p_a, p_b, signed_amplitude_fraction):
     """
     한 변(p_a→p_b)의 중간에 완만한 굴곡(저주파 사인 굽이)을 주는 점 2개를 계산한다.
+    굴곡의 크기·방향(signed_amplitude_fraction)은 호출하는 쪽(_resolve_edge_amplitude)에서
+    이미 두 이웃 알갱이의 결정형 값으로부터 대칭적으로 정해서 넘겨준다 — 이 함수는
+    그 값을 "양 끝점 좌표만으로 정해지는 변 방향"에 일관되게 투영하는 역할만 한다.
 
     핵심 설계: 이웃한 두 보로노이 셀은 이 변을 정확히 공유한다(같은 좌표). 양 끝점
-    p_a, p_b 를 "작은 점 → 큰 점" 순서로 정규화한 키에서 결정론적 시드를 만들기
-    때문에, 이웃 셀이 같은 변을 반대 방향으로 순회하며 이 함수를 호출해도 완전히
-    동일한 좌표의 굴곡점을 얻는다 — 그 결과 셀 사이에 빈틈이나 겹침 없이
-    맞물린 채로 변만 자연스럽게 굽는다(실제 암석의 봉합선 같은 결정 경계 재현).
-    변 양 끝(t=0, t=1)에서는 굴곡이 0이므로 꼭짓점에서 이웃 변과 매끄럽게 이어져
-    별 모양 같은 인공적인 뾰족함이 생기지 않는다.
+    p_a, p_b 를 "작은 점 → 큰 점" 순서로 정규화해 변의 방향(법선)을 고정하기 때문에,
+    이웃 셀이 같은 변을 반대 방향으로 순회하며 이 함수를 호출해도 완전히 동일한
+    좌표의 굴곡점을 얻는다 — 그 결과 셀 사이에 빈틈이나 겹침 없이 맞물린 채로
+    변만 자연스럽게 굽는다(실제 암석의 봉합선 같은 결정 경계 재현). 변 양 끝
+    (t=0, t=1)에서는 굴곡이 0이므로 꼭짓점에서 이웃 변과 매끄럽게 이어져 별 모양
+    같은 인공적인 뾰족함이 생기지 않는다.
     """
     key_a = (round(float(p_a[0]), 5), round(float(p_a[1]), 5))
     key_b = (round(float(p_b[0]), 5), round(float(p_b[1]), 5))
@@ -584,11 +665,6 @@ def _wavy_edge_points(p_a, p_b, wavy_fraction, base_seed):
     reversed_order = key_a > key_b
     lo, hi = (key_b, key_a) if reversed_order else (key_a, key_b)
 
-    edge_hash = hash((lo, hi, base_seed)) & 0xFFFFFFFF
-    edge_rng = np.random.default_rng(seed=edge_hash)
-    sign = float(edge_rng.choice([-1.0, 1.0]))
-    magnitude_factor = float(edge_rng.uniform(0.55, 1.0))
-
     lo_arr = np.array(lo, dtype=float)
     hi_arr = np.array(hi, dtype=float)
     canon_vec = hi_arr - lo_arr
@@ -596,7 +672,7 @@ def _wavy_edge_points(p_a, p_b, wavy_fraction, base_seed):
     if canon_len < 1e-9:
         return []
     canon_normal = np.array([-canon_vec[1], canon_vec[0]]) / canon_len
-    amplitude = canon_len * wavy_fraction * sign * magnitude_factor
+    amplitude = canon_len * signed_amplitude_fraction
 
     pts = []
     for t in (1.0 / 3.0, 2.0 / 3.0):
@@ -606,19 +682,24 @@ def _wavy_edge_points(p_a, p_b, wavy_fraction, base_seed):
     return pts[::-1] if reversed_order else pts
 
 
-def _build_wavy_polygon(base_verts, wavy_fraction, base_seed):
+def _build_wavy_polygon(cell_idx, base_verts, neighbors, habit_by_point, is_glass_by_point,
+                         low_amp, high_amp, glass_amp, base_seed):
     """직선 변으로 된 보로노이 셀 정점에, 변마다 굴곡점을 끼워 넣어 자연스러운 결정 경계로 만든다."""
     if base_verts is None or len(base_verts) < 3:
         return None
     n = len(base_verts)
     out = []
-    for i in range(n):
-        p_a = base_verts[i]
-        p_b = base_verts[(i + 1) % n]
+    for k in range(n):
+        p_a = base_verts[k]
+        p_b = base_verts[(k + 1) % n]
+        neighbor_idx = neighbors[k] if neighbors is not None else None
+        amp = _resolve_edge_amplitude(
+            cell_idx, neighbor_idx, habit_by_point, is_glass_by_point,
+            low_amp, high_amp, glass_amp, base_seed,
+        )
         out.append(p_a)
-        if wavy_fraction > 1e-6:
-            out.extend(_wavy_edge_points(p_a, p_b, wavy_fraction, base_seed))
-    return np.array(out)
+        out.extend(_wavy_edge_points(p_a, p_b, amp))
+    return _clip_polygon_to_unit_square(np.array(out))
 
 
 def _jittered_grid_points(n_target, rng, margin=0.02):
@@ -672,30 +753,42 @@ def render_grain_texture_figure(sio2, depth_km):
     ※ 중요: 이 그림은 어디까지나 "보조 시각화"다. 화면에 텍스트로 표시되는 분류
     라벨(세립질/반상질/조립질, 현무암질/안산암질/유문암질 등)은 §2의 임계값
     (SIO2_MAFIC_MAX/SIO2_FELSIC_MIN, DEPTH_SHALLOW_MAX)에 따라 여전히 단계적으로
-    결정된다 — 이 함수는 그 분류 자체를 바꾸지 않는다. 또한 "자형/반자형/타형"
-    같은 결정형 용어 자체를 학생에게 노출하지 않는다(교육과정 범위 밖).
+    결정된다 — 이 함수는 그 분류 자체를 바꾸지 않는다. 또한 "자형/반자형/타형/
+    유리질" 같은 결정형·조직 용어 자체를 학생에게 노출하지 않는다(교육과정
+    범위 밖) — 그림의 모양·질감만 사실에 가깝게 반영한다.
 
-    [v2 — 보로노이 테셀레이션 기반 재구현]
-    이전 버전(원/다각형을 배경 위에 흩뿌리는 방식)은 알갱이 사이에 배경색 틈이
-    생길 수 있었다. 실제 화성암은 "결정질 조직" — 알갱이들이 빈틈없이 맞물린
-    조직 — 이 정의 그 자체이므로, 이 틈은 가장 큰 오개념 소지였다(사용자 피드백
-    반영). 이를 구조적으로 없애기 위해 면을 100% 빈틈없이 분할하는 보로노이
-    테셀레이션으로 알갱이 경계를 만든다.
+    [v3 — 보로노이 테셀레이션 + 변 단위 결정형 + 유리질 반영]
+    v1(원/다각형을 배경 위에 흩뿌리는 방식)은 알갱이 사이에 배경색 틈이 생길 수
+    있었고, v2(보로노이 테셀레이션, 그림 전체에 균일한 굴곡 폭 하나)는 틈은
+    없앴지만 한 알갱이 안에서 자형(곧은 결정면)·반자형(곧은 면+불규칙한 면 혼재)·
+    타형(불규칙한 면)이 섞여 나타나는 실제 결정형을 반영하지 못했고, 모든
+    조직이 100% 결정질이라고 가정해 급랭 시 생기는 유리질(비정질)도 빠져
+    있었다(사용자 피드백 반영).
       - 색: SiO2 값을 SIO2_SLIDER_MIN~MAX 구간에서 MAFIC_RGB↔FELSIC_RGB로 선형 보간.
       - 알갱이 밀도(개수): 깊이가 깊을수록(냉각이 느릴수록) 평균 알갱이 크기가
         커지도록 알갱이 "개수"를 연속적으로 줄인다(보로노이 셀 평균 면적 ≈
         1/개수 관계 이용) — 알갱이 크기와 무관하게 항상 면 전체가 채워진다.
       - 반상조직(천부 관입, 0~3km 부근 정점): 굵은 결정(반정) 중심 몇 개를
-        먼저 배치하고 그 주변의 가는 바탕(석기) 점을 제외 반경만큼 비워, 반정이
-        자연스럽게 큰 셀을 차지하고 그 사이를 가는 결정들이 채우는 실제 반상조직의
-        모습(큰 결정+가는 바탕의 두 집단 공존)을 재현한다. 지표·심부에서는 이
-        반정 집단이 사라져 고르게 작거나 고르게 큰 단일 집단만 남는다.
-      - 알갱이 경계 모양: 보로노이 셀의 직선 변에, 변의 두 끝점 좌표로부터
-        결정론적으로 시드를 만든 완만한 굴곡을 끼워 넣는다. 깊을수록(냉각이
-        느릴수록) 변이 거의 곧게, 얕을수록(냉각이 빠를수록) 변이 완만하게 굽어
-        보이도록 깊이에 따라 연속적으로 조절한다. 굴곡은 변의 두 끝점에서 항상
-        0이고 이웃 셀과 좌표가 정확히 일치하므로, 굴곡을 더해도 셀 사이에 틈이나
-        겹침이 생기지 않는다(자세한 보장 원리는 _wavy_edge_points 참고).
+        먼저 배치하고 그 주변에 정상 밀도의 무작위 보강점("헤일로")을 흩뿌려,
+        반정이 자연스럽게 큰 셀을 차지하고 그 사이를 가는 결정들이 채우는 실제
+        반상조직(큰 결정+가는 바탕의 두 집단 공존)을 재현한다. 지표·심부에서는
+        이 반정 집단이 사라져 고르게 작거나 고르게 큰 단일 집단만 남는다.
+      - 결정형(변 단위): 알갱이(점)마다 "결정형 값"(0=타형 성향~1=자형 성향)을
+        깊이 기반 평균 + 개체별 무작위 편차로 따로 부여한다. 한 변을 곧게(결정면
+        처럼) 그릴지 불규칙하게 그릴지는, 그 변을 공유하는 두 알갱이의 결정형
+        값 평균을 확률로 삼아 변마다 독립적으로 동전 던지듯 정한다 — 그 결과
+        결정형 값이 중간인 알갱이는 곧은 변과 불규칙한 변이 한 알갱이 안에
+        섞여 나타난다(반자형). 반정은 평균 결정형 값을 높게 잡아(서서히 자라며
+        결정면이 잘 발달하는 경향) 매트릭스보다 더 또렷한 다각형으로 보이게 한다.
+        변의 굴곡 자체는 양 끝점 좌표로부터 결정론적 시드를 만들어 이웃 셀과
+        좌표가 정확히 일치하므로, 굴곡을 더해도 셀 사이에 틈이나 겹침이 생기지
+        않는다(자세한 보장 원리는 _wavy_edge_points/_resolve_edge_amplitude 참고).
+      - 유리질(비정질): 냉각 축에만 의존하도록(조성 축과는 독립적으로 유지해
+        두 인과축의 분리를 해치지 않도록) 깊이 0 근처에서만 일부 매트릭스
+        알갱이를 "유리질"로 표시한다(반정은 제외 — 분출 전 액체 속에서 먼저 자란
+        결정이므로 늘 결정질로 남는다). 저주파 2차원 잡음장으로 흩어지지 않고
+        뭉친 무리(패치)를 이루도록 하고, 유리질 알갱이가 관여하는 변은 결정면
+        구분 없이 거의 매끈하게(굴곡 최소) 그려 결정 구조가 없는 느낌을 낸다.
 
     Returns
     -------
@@ -789,32 +882,71 @@ def render_grain_texture_figure(sio2, depth_km):
         all_points = np.vstack([all_points, fallback]) if len(all_points) else fallback
         is_phenocryst = np.concatenate([is_phenocryst, np.zeros(len(fallback), dtype=bool)])
 
-    regions = _bounded_voronoi_regions(all_points)
+    n_total = len(all_points)
 
-    # 4) 결정 경계의 굴곡 정도(자형/타형 용어는 노출하지 않음) — 깊을수록 거의 곧은 변,
-    #    얕을수록 완만하게 굽은 변이 되도록 깊이에 따라 연속적으로 조절한다.
+    # 4) 알갱이(점)별 결정형 값(0=타형 성향~1=자형 성향) — 깊이 기반 평균 + 개체별
+    #    무작위 편차. 반정은 평균을 높게 잡아(서서히 자라 결정면이 잘 발달하는
+    #    경향) 매트릭스보다 더 또렷한 다각형으로 보이도록 한다. 실제 사용되는
+    #    굴곡 폭(직선~불규칙)은 _resolve_edge_amplitude 에서 변 단위로 정해진다.
     mean_euhedral = 0.12 + 0.7 * (t_depth ** 0.6)
-    wavy_strength = float(np.clip(1.0 - mean_euhedral, 0.0, 1.0))
-    # 폭이 너무 크면(과거 0.05~0.31) 모든 변이 동시에 부풀어 다각형이 아니라
-    # 자갈/기포가 뭉친 것처럼 보이는 또 다른 오개념을 만든다(실측 후 확인된 문제).
-    # 결정 경계가 "약간 우글거리는 다각형"으로 보이는 수준까지만 폭을 낮춘다.
-    wavy_fraction = 0.012 + 0.085 * wavy_strength
+    point_habit_mean = np.where(is_phenocryst, 0.78, mean_euhedral)
+    point_habit_scale = np.where(is_phenocryst, 0.13, 0.24)
+    habit_by_point = np.clip(rng.normal(loc=point_habit_mean, scale=point_habit_scale, size=n_total), 0.0, 1.0)
+
+    # 5) 유리질(비정질) — 냉각 축(깊이)에만 의존시켜 조성 축과 독립을 유지한다.
+    #    지표(0km)에서 최대, 약 1.2km 이상에서는 사라진다. 반정은 늘 결정질로
+    #    남으므로 후보에서 제외한다. 저주파 2차원 잡음장을 임계값으로 잘라
+    #    무작위로 흩어지지 않고 뭉친 무리(패치)를 이루게 한다(실제 유리질
+    #    바탕은 점점이 흩어지기보다 한 덩어리로 이어지는 경우가 많다).
+    glass_fraction = float(np.clip(1.0 - depth_km / 1.2, 0.0, 1.0)) * 0.5
+    is_glass_by_point = np.zeros(n_total, dtype=bool)
+    if glass_fraction > 0.02:
+        matrix_idx = np.where(~is_phenocryst)[0]
+        xy = all_points[matrix_idx]
+        f1, f2 = rng.uniform(1.6, 2.6, size=2)
+        ph = rng.uniform(0, 2 * np.pi, size=4)
+        noise_field = (
+            np.sin(2 * np.pi * f1 * xy[:, 0] + ph[0]) * np.sin(2 * np.pi * f1 * xy[:, 1] + ph[1])
+            + np.sin(2 * np.pi * f2 * xy[:, 0] + ph[2]) * np.sin(2 * np.pi * f2 * xy[:, 1] + ph[3])
+        )
+        threshold = np.quantile(noise_field, 1.0 - glass_fraction)
+        is_glass_by_point[matrix_idx[noise_field >= threshold]] = True
+
+    cell_polygons, cell_neighbors = _voronoi_cells_with_neighbors(all_points)
+
+    # 굴곡 폭(변 끝점 사이 거리에 대한 비율). low=결정면처럼 거의 곧음,
+    # high=이웃에 밀려난 불규칙한 면, glass=결정 구조가 없는 유리질의 매끈한 경계.
+    # (이전에 0.05~0.31 폭을 쓴 적이 있었는데 모든 변이 동시에 부풀어 다각형이
+    # 아니라 자갈/기포가 뭉친 것처럼 보이는 오개념을 만들어, 1/3 수준으로 낮췄다.)
+    low_amp, high_amp, glass_amp = 0.012, 0.097, 0.006
 
     fig, ax = plt.subplots(figsize=(3.0, 3.0), dpi=110)
     fig.patch.set_alpha(0.0)
     ax.add_patch(Rectangle((0, 0), 1, 1, facecolor=bg_rgb, zorder=0))
 
     shade_rng = np.random.default_rng(seed=seed ^ 0x5BD1E995)
-    for poly_pts, is_pheno in zip(regions, is_phenocryst):
+    for i in range(n_total):
+        poly_pts = cell_polygons[i]
         if poly_pts is None or len(poly_pts) < 3:
             continue
-        wavy_poly = _build_wavy_polygon(poly_pts, wavy_fraction, seed)
+        wavy_poly = _build_wavy_polygon(
+            i, poly_pts, cell_neighbors[i], habit_by_point, is_glass_by_point,
+            low_amp, high_amp, glass_amp, seed,
+        )
         if wavy_poly is None or len(wavy_poly) < 3:
             continue
-        # 반정(큰 결정)은 바탕(석기)보다 명암 편차를 줄여 더 "또렷한 낱개 결정" 느낌을 준다.
-        shade = shade_rng.uniform(-0.10, 0.10) if is_pheno else shade_rng.uniform(-0.18, 0.18)
+        if is_phenocryst[i]:
+            # 반정(큰 결정)은 바탕(석기)보다 명암 편차를 줄여 더 "또렷한 낱개 결정" 느낌을 준다.
+            shade = shade_rng.uniform(-0.10, 0.10)
+            edge_alpha = 0.34
+        elif is_glass_by_point[i]:
+            # 유리질은 광학적으로 더 균질해 보이므로 알갱이별 명암 편차·테두리를 더 옅게.
+            shade = shade_rng.uniform(-0.07, 0.07)
+            edge_alpha = 0.07
+        else:
+            shade = shade_rng.uniform(-0.18, 0.18)
+            edge_alpha = 0.26
         grain_rgb = tuple(min(max(c + shade, 0.0), 1.0) for c in bg_rgb)
-        edge_alpha = 0.34 if is_pheno else 0.26
         ax.add_patch(
             Polygon(wavy_poly, closed=True, facecolor=grain_rgb,
                     edgecolor=(0, 0, 0, edge_alpha), linewidth=0.45,
