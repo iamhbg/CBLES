@@ -601,20 +601,22 @@ def _voronoi_cells_with_neighbors(points):
 def _resolve_edge_amplitude(cell_idx, neighbor_idx, habit_by_point, is_glass_by_point,
                              low_amp, high_amp, glass_amp, base_seed):
     """
-    한 변의 굴곡 폭(부호 포함)과 스타일 분류("facet"/"irregular"/"glass")를 함께 정한다.
-    스타일 분류는 호출부(_build_wavy_polygon)가 테두리 선 굵기·진하기를 다르게
-    그리는 데 쓴다 — 굴곡 폭 차이만으로는 사람 눈에 거의 안 띄어서(실측 후 확인된
-    문제), 결정면처럼 보이는 변은 굵고 진하게, 불규칙한 변은 거의 안 보이게 옅게
-    그려 자형/반자형/타형의 차이를 한눈에 알아볼 수 있게 한다.
+    한 변의 굴곡 폭(부호 포함)과 스타일 분류("bold"/"medium"/"faint"/"glass")를
+    함께 정한다. 스타일 분류는 호출부(_build_wavy_polygon)가 테두리 선 굵기·
+    진하기를 다르게 그리는 데 쓴다 — 굴곡 폭 차이만으로는 사람 눈에 거의 안
+    띄어서(실측 후 확인된 문제), 결정면처럼 보이는 변은 굵고 진하게, 불규칙한
+    변은 거의 안 보이게 옅게 그려 자형/반자형/타형의 차이를 한눈에 알아볼 수
+    있게 한다.
 
-    실제 결정형 분류(자형/반자형/타형)는 "알갱이 하나가 통째로 둥글다/각지다"가
-    아니라 "그 알갱이의 변 하나하나가 결정면(곧음)인지 이웃에 밀려난 불규칙한
-    면인지"의 혼합이다. 그래서 변마다 독립적으로 "이 변은 결정면처럼 그릴지"를
-    동전 던지듯 정하되, 그 확률을 이 변을 공유하는 두 알갱이의 결정형 값
-    평균으로 잡는다 — 자형 알갱이끼리 맞닿으면 곧은 면이 나오기 쉽고, 자형과
-    타형이 맞닿으면 그 경계는 타형 쪽으로 밀리며, 같은 알갱이라도 이웃이
-    바뀌면 변의 성격도 달라진다(실제 박편 사진처럼 한 알갱이 안에 곧은 면과
-    불규칙한 면이 섞여 보인다 = 반자형).
+    처음엔 변마다 "이 변을 결정면처럼 그릴지"를 동전 던지듯 무작위로 정했더니,
+    한 알갱이 둘레에 진한 선과 흐린 선이 의미 없이 뒤섞여 "금이 간 것처럼"
+    보이는 문제가 있었다(실측 후 확인된 문제). 결정면은 "둘 중 더 잘 발달한
+    알갱이 쪽"이 보이는 것이므로, 무작위 동전 던지기 대신 두 알갱이의 결정형
+    값 중 더 큰 값(max)을 결정론적으로 쓴다 — 그 결과 자형 알갱이는 이웃이
+    무엇이든 자기 둘레 전체가 한결같이 또렷하고, 타형(흐릿한 바탕) 알갱이는
+    자형 이웃과 맞닿은 그 변만 도드라지고 나머지(타형 이웃과 맞닿은 변)는
+    흐려진다 — 실제 박편 사진에서 "또렷한 결정 몇 개 + 그 사이를 채운 흐릿한
+    바탕"으로 읽히는 것과 같은 효과를 낸다.
 
     key 를 (min(cell_idx, neighbor_idx), max(...)) 로 정규화하므로, 이 변을
     공유하는 두 알갱이가 각자의 관점에서 이 함수를 호출해도 완전히 같은
@@ -631,22 +633,23 @@ def _resolve_edge_amplitude(cell_idx, neighbor_idx, habit_by_point, is_glass_by_
     edge_seed = hash((key, base_seed)) & 0xFFFFFFFF
     edge_rng = np.random.default_rng(seed=edge_seed)
     sign = float(edge_rng.choice([-1.0, 1.0]))
-    magnitude_factor = float(edge_rng.uniform(0.55, 1.0))
-    facet_roll = float(edge_rng.random())
+    magnitude_factor = float(edge_rng.uniform(0.7, 1.0))
 
     is_glass_edge = bool(is_glass_by_point[cell_idx]) or (
         neighbor_idx is not None and bool(is_glass_by_point[neighbor_idx])
     )
     if is_glass_edge:
         # 유리질(비정질)은 결정면 자체가 없으므로 거의 매끈하게(아주 약한 불규칙함만) 그린다.
-        base_amp = glass_amp
-        style = "glass"
+        return glass_amp * sign * magnitude_factor, "glass"
+
+    strength = max(habit_a, habit_b)
+    base_amp = low_amp + (high_amp - low_amp) * (1.0 - strength)
+    if strength >= 0.7:
+        style = "bold"
+    elif strength >= 0.42:
+        style = "medium"
     else:
-        facet_probability = (habit_a + habit_b) / 2.0
-        if facet_roll < facet_probability:
-            base_amp, style = low_amp, "facet"
-        else:
-            base_amp, style = high_amp, "irregular"
+        style = "faint"
 
     return base_amp * sign * magnitude_factor, style
 
@@ -949,12 +952,12 @@ def render_grain_texture_figure(sio2, depth_km):
 
     # 변 단위 굴곡 폭 차이는(특히 작은 알갱이에서) 사람 눈에 거의 안 띈다는
     # 피드백으로, 자형/반자형/타형의 핵심 신호를 "테두리 선의 굵기·진하기"로
-    # 옮긴다 — 결정면(facet)으로 판정된 변은 굵고 진하게, 불규칙(irregular)한
-    # 변은 거의 안 보이게 옅게 그려 한 알갱이 안에서도 그 차이가 한눈에 보이게
-    # 한다. 채우기(면)와 테두리(선)를 분리해서 그려야 변마다 다른 선 스타일을
-    # 줄 수 있어, 채우기는 셀 단위로 먼저 모두 그린 뒤 테두리는 스타일별로
-    # LineCollection 3개로 묶어 한 번에 그린다(개별 ax.plot 수천 번보다 훨씬 빠름).
-    facet_segments, irregular_segments, glass_segments = [], [], []
+    # 옮긴다 — 결정형 값이 높은 쪽이 관여하는 변(bold/medium)은 진하게, 둘 다
+    # 낮은 변(faint)은 거의 안 보이게 옅게 그려 한 알갱이 안에서도 그 차이가
+    # 한눈에 보이게 한다. 채우기(면)와 테두리(선)를 분리해서 그려야 변마다 다른
+    # 선 스타일을 줄 수 있어, 채우기는 셀 단위로 먼저 모두 그린 뒤 테두리는
+    # 스타일별로 LineCollection 으로 묶어 한 번에 그린다(개별 ax.plot 수천 번보다 훨씬 빠름).
+    bold_segments, medium_segments, faint_segments, glass_segments = [], [], [], []
 
     shade_rng = np.random.default_rng(seed=seed ^ 0x5BD1E995)
     for i in range(n_total):
@@ -985,27 +988,35 @@ def render_grain_texture_figure(sio2, depth_km):
                     joinstyle="round", zorder=1)
         )
         for seg_points, style in edge_segments:
-            if style == "facet":
-                facet_segments.append(seg_points)
+            if style == "bold":
+                bold_segments.append(seg_points)
+            elif style == "medium":
+                medium_segments.append(seg_points)
             elif style == "glass":
                 glass_segments.append(seg_points)
             else:
-                irregular_segments.append(seg_points)
+                faint_segments.append(seg_points)
 
-    if irregular_segments:
-        ax.add_collection(LineCollection(
-            irregular_segments, colors=[(0, 0, 0, 0.12)], linewidths=0.35, zorder=2,
-        ))
+    # 흐린 것부터 진한 것 순으로(zorder 오름차순) 그려야, 한 알갱이의 또렷한
+    # 면(bold)이 이웃의 흐린 선 위에 항상 또렷하게 보인다.
     if glass_segments:
         ax.add_collection(LineCollection(
-            glass_segments, colors=[(0, 0, 0, 0.04)], linewidths=0.3, zorder=2,
+            glass_segments, colors=[(0, 0, 0, 0.035)], linewidths=0.22, zorder=2,
         ))
-    if facet_segments:
-        # 결정면(자형 성향) 변은 가장 마지막(zorder 최상위)에 굵고 진하게 그려
-        # "이 알갱이는 면이 잘 발달했다"는 인상이 또렷이 남게 한다.
+    if faint_segments:
         ax.add_collection(LineCollection(
-            facet_segments, colors=[(0, 0, 0, 0.55)], linewidths=0.9,
-            capstyle="round", zorder=3,
+            faint_segments, colors=[(0, 0, 0, 0.07)], linewidths=0.3, zorder=2,
+        ))
+    if medium_segments:
+        ax.add_collection(LineCollection(
+            medium_segments, colors=[(0, 0, 0, 0.22)], linewidths=0.5, zorder=3,
+        ))
+    if bold_segments:
+        # 자형 성향(결정형 값이 높은 쪽)이 관여하는 변은 가장 마지막(zorder 최상위)에
+        # 굵고 진하게 그려 "이 알갱이는 면이 잘 발달했다"는 인상이 또렷이 남게 한다.
+        ax.add_collection(LineCollection(
+            bold_segments, colors=[(0, 0, 0, 0.6)], linewidths=0.85,
+            capstyle="round", zorder=4,
         ))
 
     ax.set_xlim(0, 1)
