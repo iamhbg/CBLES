@@ -23,6 +23,7 @@
 """
 
 import os
+import re
 import streamlit as st
 
 # ------------------------------------------------------------------------------
@@ -202,6 +203,18 @@ SYSTEM_PROMPT = """
 - 학생의 대답에 "틀렸습니다", "오답입니다"와 같은 단정을 사용하지 마십시오.
 - '[시뮬레이터 현재 상태]'로 시작하는 줄은 학생이 화면에서 보고 있는 참고용 시스템 정보이며, 학생의 발화가 아닙니다. 이 정보를 활용해 발문의 맥락을 잡되, 결코 정답을 흘리지 마십시오.
 - 한반도의 대표 지형(제주도·한탄강·울릉도·독도의 현무암, 설악산·북한산·월출산의 화강암 등)을 직관적 단서로 적극 활용하십시오.
+
+[State Marker — 필수 출력 형식]
+매 응답의 맨 첫 줄에 현재 학습 상태를 다음 형식으로 단독 출력하라 (이 줄 외 다른 텍스트 없이):
+[STATE:N]
+(N은 0~4 정수. 이전 State와 같아도 반드시 매 응답에 출력할 것.)
+Python 코드가 이 마커를 자동 파싱·제거하므로 학생 화면에는 표시되지 않는다.
+State 2 이상이고 현재 암석이 현무암 또는 화강암인 경우, 학생 화면에 절리 형성 과정 모식도가 자동으로 표시된다. 이 그림을 발문에서 직접 참조하라 ("위에 나온 그림을 보면…" 등).
+
+올바른 출력 예시 (State 2):
+[STATE:2]
+
+와, 섭입대에서 물이 공급되면…
 """.strip()
 
 
@@ -1174,6 +1187,242 @@ def render_grain_texture_figure(sio2, depth_km):
     return fig
 
 
+def render_columnar_joint_diagram():
+    """
+    주상절리 형성 과정 모식도 (용암 급랭 → 부피 수축 → 수직 균열).
+    VISUAL_AVAILABLE 일 때만 호출한다.
+
+    설계:
+    - 왼쪽 패널 ①: 현무암질 용암 분출 + 공기 접촉 급랭 화살표
+    - 오른쪽 패널 ②: 냉각 완료 + 수축 방향 화살표 + 수직 균열(주상절리)
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib.font_manager as fm
+
+    # 한국어 폰트 탐색 (없으면 기본 폰트 — 한국어 자가 □으로 표시될 수 있으나 앱은 동작함)
+    _preferred = ['Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', 'UnDotum']
+    _available = {f.name for f in fm.fontManager.ttflist}
+    _korean = next((n for n in _preferred if n in _available), None)
+    if _korean:
+        plt.rcParams['font.family'] = _korean
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.4, 3.8), dpi=100)
+    fig.patch.set_facecolor('#12121e')
+
+    for ax in (ax1, ax2):
+        ax.set_facecolor('#12121e')
+        ax.set_xlim(0, 10)
+        ax.set_ylim(0, 10)
+        ax.axis('off')
+
+    # ── 패널①: 용암 분출·급랭 시작 ────────────────────────────────────
+    ax1.fill_between([0, 10], 6.5, 10, color='#1c2a4a')       # 공기(하늘)
+    ax1.fill_between([0, 10], 0, 6.5, color='#5C1200')         # 용암
+
+    # 용암 열점 원형 패치 (열기 표현)
+    for cx, cy, r in [(1.8, 5.0, 0.85), (4.5, 3.2, 1.05),
+                       (7.2, 5.2, 0.75), (3.0, 1.5, 0.65), (7.8, 2.2, 0.8)]:
+        ax1.add_patch(plt.Circle((cx, cy), r, color='#C04000', alpha=0.38, zorder=2))
+
+    ax1.axhline(y=6.5, color='#999999', linewidth=1.5, zorder=3)  # 지표면
+
+    # 냉각 화살표 (공기 → 지표)
+    for x in [2.0, 5.0, 8.0]:
+        ax1.annotate('', xy=(x, 6.55), xytext=(x, 9.3),
+                     arrowprops=dict(arrowstyle='->', color='#88CCFF',
+                                     lw=1.8, mutation_scale=12), zorder=4)
+
+    ax1.text(5.0, 9.7, '급랭 (공기 접촉)', ha='center', va='center',
+             color='#88CCFF', fontsize=8.5, fontweight='bold', zorder=5)
+    ax1.text(5.0, 3.2, '현무암질 용암', ha='center', va='center',
+             color='#FFB86C', fontsize=8.5, zorder=5)
+    ax1.text(5.0, 0.5, '① 분출 · 급랭 시작', ha='center', va='center',
+             color='white', fontsize=8.5, fontweight='bold', zorder=5)
+
+    # ── 패널②: 주상절리 형성 ──────────────────────────────────────────
+    ax2.fill_between([0, 10], 6.5, 10, color='#1c2a4a')        # 공기(하늘)
+
+    # 주상절리 기둥 5개 (폭 2.0씩)
+    for i, shade in enumerate(['#333340', '#3e3e4d', '#333340', '#3e3e4d', '#333340']):
+        ax2.fill_between([i * 2.0, i * 2.0 + 2.0], 0, 6.5,
+                          color=shade, alpha=0.92, zorder=1)
+        ax2.plot([i * 2.0, i * 2.0], [0, 6.5], color='#CCCCCC', lw=0.9, zorder=3)
+    ax2.plot([10.0, 10.0], [0, 6.5], color='#CCCCCC', lw=0.9, zorder=3)
+
+    # 수축 화살표: 기둥 중심 → 양쪽 절리면
+    for i in range(5):
+        cx = i * 2.0 + 1.0
+        y_mid = 3.3
+        ax2.annotate('', xy=(i * 2.0 + 0.22, y_mid), xytext=(cx - 0.1, y_mid),
+                     arrowprops=dict(arrowstyle='->', color='#FF8877',
+                                     lw=0.9, mutation_scale=8), zorder=4)
+        ax2.annotate('', xy=((i + 1) * 2.0 - 0.22, y_mid), xytext=(cx + 0.1, y_mid),
+                     arrowprops=dict(arrowstyle='->', color='#FF8877',
+                                     lw=0.9, mutation_scale=8), zorder=4)
+
+    ax2.axhline(y=6.5, color='#999999', linewidth=1.5, zorder=3)  # 지표면
+
+    ax2.text(5.0, 9.7, '수축 방향   ←   →', ha='center', va='center',
+             color='#FF8877', fontsize=8.5, fontweight='bold', zorder=5)
+    ax2.text(5.0, 1.7, '주상절리 형성', ha='center', va='center',
+             color='#FFD700', fontsize=9.0, fontweight='bold', zorder=5)
+    ax2.text(5.0, 0.5, '② 수축 → 수직 균열', ha='center', va='center',
+             color='white', fontsize=8.5, fontweight='bold', zorder=5)
+
+    fig.tight_layout(pad=0.2)
+    return fig
+
+
+def render_sheet_joint_diagram():
+    """
+    판상절리 형성 과정 모식도 (지하 심부 서랭 → 융기 → 압력 감소 → 수평 균열).
+    VISUAL_AVAILABLE 일 때만 호출한다.
+
+    설계:
+    - (가): 지하 심부 — 화강암 블록에 사방에서 높은 압력 작용
+    - (나): 융기·풍화·침식 — 하중 감소, 압력 완화
+    - (다): 지표 노출 — 압력 해방으로 수평 판상절리 발달
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib.font_manager as fm
+
+    _preferred = ['Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', 'UnDotum']
+    _available = {f.name for f in fm.fontManager.ttflist}
+    _korean = next((n for n in _preferred if n in _available), None)
+    if _korean:
+        plt.rcParams['font.family'] = _korean
+
+    fig, (ax_ga, ax_na, ax_da) = plt.subplots(1, 3, figsize=(8.5, 4.5), dpi=100)
+    fig.patch.set_facecolor('#12121e')
+
+    for ax in (ax_ga, ax_na, ax_da):
+        ax.set_facecolor('#12121e')
+        ax.set_xlim(0, 10)
+        ax.set_ylim(0, 13)
+        ax.axis('off')
+
+    def _pressure_arrows(ax, bx0, by0, bw, bh, n=2, alpha=1.0):
+        """암석 블록 사방에서 안쪽으로 향하는 압력 화살표."""
+        c = (1.0, 0.55, 0.15, alpha)  # RGBA orange, alpha로 강도 표현
+        arr_len, lw, ms = 1.3, 1.2, 9
+        dx, dy = bw / (n + 1), bh / (n + 1)
+        for i in range(1, n + 1):
+            x = bx0 + dx * i
+            # 위
+            ax.annotate('', xy=(x, by0 + bh + 0.1), xytext=(x, by0 + bh + arr_len),
+                        arrowprops=dict(arrowstyle='->', color=c, lw=lw,
+                                        mutation_scale=ms), zorder=6)
+            # 아래
+            ax.annotate('', xy=(x, by0 - 0.1), xytext=(x, by0 - arr_len),
+                        arrowprops=dict(arrowstyle='->', color=c, lw=lw,
+                                        mutation_scale=ms), zorder=6)
+        for j in range(1, n + 1):
+            y = by0 + dy * j
+            # 왼
+            ax.annotate('', xy=(bx0 - 0.1, y), xytext=(bx0 - arr_len, y),
+                        arrowprops=dict(arrowstyle='->', color=c, lw=lw,
+                                        mutation_scale=ms), zorder=6)
+            # 오른
+            ax.annotate('', xy=(bx0 + bw + 0.1, y), xytext=(bx0 + bw + arr_len, y),
+                        arrowprops=dict(arrowstyle='->', color=c, lw=lw,
+                                        mutation_scale=ms), zorder=6)
+
+    def _draw_block(ax, bx0, by0, bw, bh, color, label='', zorder=2):
+        """채워진 직사각형 암석 블록 + 테두리."""
+        ax.fill_between([bx0, bx0 + bw], by0, by0 + bh,
+                         color=color, alpha=0.90, zorder=zorder)
+        ax.plot([bx0, bx0 + bw, bx0 + bw, bx0, bx0],
+                [by0, by0, by0 + bh, by0 + bh, by0],
+                color='#AAAAAA', lw=0.9, zorder=zorder + 1)
+        if label:
+            ax.text(bx0 + bw / 2, by0 + bh / 2, label,
+                    ha='center', va='center', color='white',
+                    fontsize=9, fontweight='bold', zorder=zorder + 2)
+
+    # ── (가): 지하 심부, 높은 압력 ──────────────────────────────────────
+    ax_ga.fill_between([0, 10], 0, 13, color='#1a1820')           # 지하 배경
+
+    # 위를 덮는 암석(퇴적암 하중)
+    _draw_block(ax_ga, 0.5, 8.5, 9.0, 2.0, color='#5C4020',
+                label='위를 덮는 암석 (하중)', zorder=2)
+
+    # 화강암 블록 A
+    _draw_block(ax_ga, 1.5, 4.0, 7.0, 4.0, color='#5A5A6A', label='화강암 A', zorder=2)
+
+    # 높은 압력 화살표 (사방)
+    _pressure_arrows(ax_ga, 1.5, 4.0, 7.0, 4.0, n=2, alpha=1.0)
+
+    ax_ga.text(5.0, 2.0, '지하 심부\n(높은 압력)', ha='center', va='center',
+               color='#FFCC88', fontsize=8.5, fontweight='bold', zorder=5)
+    ax_ga.text(5.0, 0.4, '(가) 지하 깊은 곳', ha='center', va='center',
+               color='white', fontsize=9.0, fontweight='bold', zorder=5)
+
+    # ── (나): 융기·풍화·침식 ────────────────────────────────────────────
+    ax_na.fill_between([0, 10], 0, 13, color='#1a1820')
+
+    # 얇아진 퇴적층 (일부 침식됨 — 점선 테두리)
+    ax_na.fill_between([0.5, 9.5], 9.0, 10.0, color='#5C4020', alpha=0.5, zorder=2)
+    ax_na.plot([0.5, 9.5, 9.5, 0.5, 0.5], [9.0, 9.0, 10.0, 10.0, 9.0],
+               color='#888888', lw=0.8, linestyle='--', zorder=3)
+    ax_na.text(5, 9.5, '침식 중…', ha='center', va='center',
+               color='#FFE0A0', fontsize=7.5, alpha=0.7, zorder=4)
+
+    # 화강암 블록 A (더 위로 융기)
+    _draw_block(ax_na, 1.5, 5.5, 7.0, 3.5, color='#5A5A6A', label='화강암 A', zorder=2)
+
+    # 약해진 압력 화살표 (alpha 낮춤)
+    _pressure_arrows(ax_na, 1.5, 5.5, 7.0, 3.5, n=2, alpha=0.25)
+
+    # 융기 화살표 (위로)
+    ax_na.annotate('', xy=(5, 10.7), xytext=(5, 9.2),
+                   arrowprops=dict(arrowstyle='->', color='#88EE88',
+                                   lw=2.0, mutation_scale=14), zorder=7)
+    ax_na.text(5.0, 11.5, '융기 + 풍화·침식', ha='center', va='center',
+               color='#88EE88', fontsize=8.0, fontweight='bold', zorder=7)
+
+    ax_na.text(5.0, 2.5, '압력 감소 중', ha='center', va='center',
+               color='#FFCC88', fontsize=8.5, fontweight='bold', zorder=5)
+    ax_na.text(5.0, 0.4, '(나) 융기 · 풍화 · 침식', ha='center', va='center',
+               color='white', fontsize=9.0, fontweight='bold', zorder=5)
+
+    # ── (다): 지표 노출, 판상절리 형성 ──────────────────────────────────
+    ax_da.fill_between([0, 10], 0, 13, color='#1a2035')           # 하늘 배경
+
+    # 지표면 토양층
+    ax_da.fill_between([0, 10], 9.3, 10.2, color='#5C4020', alpha=0.55)
+    ax_da.axhline(y=9.3, color='#A0856A', linewidth=1.5, zorder=4)
+
+    # 화강암 블록 A (지표에 노출)
+    _draw_block(ax_da, 1.0, 1.5, 8.0, 7.8, color='#5A5A6A', label='', zorder=2)
+    ax_da.text(5.0, 8.2, '화강암 A', ha='center', va='center',
+               color='white', fontsize=9, fontweight='bold', zorder=4)
+
+    # 판상절리 수평선 3개
+    for frac in [0.25, 0.52, 0.74]:
+        jy = 1.5 + 7.8 * frac
+        ax_da.plot([1.0, 9.0], [jy, jy], color='#DDDDDD', lw=1.2, zorder=5)
+
+    # 화살표 + 라벨 (판상절리 가리킴)
+    ax_da.annotate('', xy=(9.05, 1.5 + 7.8 * 0.52), xytext=(9.05, 11.0),
+                   arrowprops=dict(arrowstyle='->', color='#FFD700',
+                                   lw=1.2, mutation_scale=8,
+                                   connectionstyle='arc3,rad=0.0'), zorder=6)
+    ax_da.text(9.15, 11.0, '판상\n절리', ha='left', va='center',
+               color='#FFD700', fontsize=8.0, fontweight='bold', zorder=6)
+
+    ax_da.text(5.0, 0.4, '(다) 판상절리 형성', ha='center', va='center',
+               color='white', fontsize=9.0, fontweight='bold', zorder=5)
+
+    fig.tight_layout(pad=0.25)
+    return fig
+
+
 # ==============================================================================
 # 4. Gemini API 연동 로직
 # ==============================================================================
@@ -1231,6 +1480,36 @@ def convert_history_for_gemini(messages):
         role = "user" if msg["role"] == "user" else "model"
         gemini_history.append({"role": role, "parts": [msg["content"]]})
     return gemini_history
+
+
+def _parse_and_strip_state(reply_text):
+    """
+    AI 응답 첫 줄의 [STATE:N] 마커를 파싱하고 제거한다.
+
+    SYSTEM_PROMPT 지침에 따라 Gemini 는 매 응답 첫 줄에
+    '[STATE:0]'~'[STATE:4]' 형식의 마커를 출력한다.
+    이 함수는 마커를 추출한 뒤 학생에게 노출할 텍스트에서 제거한다.
+
+    Parameters
+    ----------
+    reply_text : str
+        Gemini 가 반환한 원문 응답.
+
+    Returns
+    -------
+    (int or None, str)
+        - 첫 번째 원소: 파싱된 상태값(0~4). 마커가 없으면 None.
+        - 두 번째 원소: 마커가 제거된(학생에게 보여줄) 텍스트.
+    """
+    if not reply_text:
+        return None, reply_text
+    stripped = reply_text.strip()
+    match = re.match(r'^\[STATE:([0-4])\]\s*\n?', stripped)
+    if match:
+        state = int(match.group(1))
+        cleaned = stripped[match.end():].strip()
+        return state, cleaned
+    return None, reply_text
 
 
 def request_tutor_reply(prior_history, outgoing_message, model_name, api_key):
@@ -1480,6 +1759,35 @@ def render_chat_panel(results, api_key, model_name):
 
     ready = GENAI_AVAILABLE and bool(api_key)
 
+    # ── 절리 형성 과정 모식도 (State ≥ 2 + 현무암/화강암 조합에서만 표시) ──────
+    # State 2부터 학생이 냉각 환경 개념을 이해하기 시작하므로, 이 시점에
+    # 절리 형성 과정 시각화를 제공하여 AI 튜터의 발문을 뒷받침한다.
+    _learning_state = st.session_state.get("learning_state", 0)
+    _rock_name = results.get("rock_name", "")
+    if VISUAL_AVAILABLE and _learning_state >= 2 and _rock_name in ("현무암", "화강암"):
+        with st.expander("🔍 냉각 환경의 증거 — 절리 형성 과정", expanded=True):
+            if _rock_name == "현무암":
+                _col_fig = render_columnar_joint_diagram()
+                st.pyplot(_col_fig, use_container_width=True)
+                plt.close(_col_fig)
+                st.caption(
+                    "용암이 지표에서 공기와 접촉하면 **빠르게 냉각**되어 부피가 수축합니다. "
+                    "수축이 표면에서 수직 아래 방향으로 진행될 때, "
+                    "표면에 수직인 **수직 균열**이 규칙적으로 발달해 **주상절리**가 형성됩니다. "
+                    "이 기둥 모양의 절리는 **급랭(지표 냉각)의 증거**입니다."
+                )
+            else:  # 화강암
+                _sheet_fig = render_sheet_joint_diagram()
+                st.pyplot(_sheet_fig, use_container_width=True)
+                plt.close(_sheet_fig)
+                st.caption(
+                    "화강암이 지하 깊은 곳(높은 압력)에서 서서히 식어 형성된 뒤, "
+                    "**융기하면서 위를 덮고 있던 암석이 풍화·침식으로 제거**되면 "
+                    "압력이 줄어들며 암석이 팽창합니다. 이때 지표면과 평행한 방향으로 "
+                    "**판 모양의 절리(판상절리)**가 발달합니다. "
+                    "이 수평 절리는 **서랭(지하 심부 냉각)의 증거**입니다."
+                )
+
     # 상태 안내
     if not GENAI_AVAILABLE:
         st.error(
@@ -1527,6 +1835,8 @@ def main():
     # 세션 상태 초기화
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "learning_state" not in st.session_state:
+        st.session_state.learning_state = 0
 
     # 사이드바 + 상단 헤더
     model_name = render_sidebar()
@@ -1592,17 +1902,25 @@ def main():
         # 4) Gemini 호출 (꼼꼼한 예외 처리)
         try:
             with st.spinner("AI 튜터가 생각 중이에요…"):
-                reply = request_tutor_reply(
+                raw_reply = request_tutor_reply(
                     prior_history=prior_history,
                     outgoing_message=outgoing_message,
                     model_name=model_name,
                     api_key=effective_api_key,
                 )
-            if not reply or not reply.strip():
+            if not raw_reply or not raw_reply.strip():
                 reply = (
                     "음, 방금 응답을 만들지 못했어. 다시 한번 네 생각을 말해 줄래? "
                     "(모델이 빈 응답을 반환했어요.)"
                 )
+            else:
+                # [STATE:N] 마커를 파싱하여 학습 상태를 갱신한 뒤 마커를 제거한다.
+                # 상태는 단조 증가(뒷걸음치지 않도록 max 적용)
+                parsed_state, reply = _parse_and_strip_state(raw_reply)
+                if parsed_state is not None:
+                    st.session_state.learning_state = max(
+                        st.session_state.get("learning_state", 0), parsed_state
+                    )
         except Exception as call_err:
             # 사용자에게 친화적인 메시지 + 디버깅 정보 노출
             reply = (
