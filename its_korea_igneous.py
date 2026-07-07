@@ -75,14 +75,8 @@ except Exception as _visual_import_err:
 # Gemini 모델명 (요구사항: gemini-1.5-flash 또는 gemini-1.5-pro)
 #  ※ Google이 구형 모델을 단계적으로 종료할 수 있습니다. 만약 아래 모델명으로
 #    호출이 실패하면 'gemini-2.0-flash', 'gemini-2.5-flash' 등 현재 사용 가능한
-#    모델명으로 교체하십시오. (사이드바에서도 선택할 수 있도록 구성함)
-DEFAULT_MODEL = "gemini-1.5-flash"
-SELECTABLE_MODELS = [
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash",
-]
+#    모델명을 변경하려면 이 상수만 바꾸면 된다.
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 # 화성암 분류 SiO2 임계값 (교과서 표 II-1 기준: 염기성 ≤52% < 중성 < 63% ≤ 산성)
 SIO2_MAFIC_MAX = 52.0          # 이 값 이하 → 염기성암(현무암질)
@@ -1240,12 +1234,7 @@ def render_sidebar():
     with st.sidebar:
         st.header("⚙️ 설정")
 
-        model_name = st.selectbox(
-            "Gemini 모델",
-            options=SELECTABLE_MODELS,
-            index=SELECTABLE_MODELS.index(DEFAULT_MODEL),
-            help="1.5 계열이 종료되어 호출이 실패하면 2.0/2.5 계열로 바꿔 보세요.",
-        )
+        model_name = DEFAULT_MODEL
 
         st.divider()
 
