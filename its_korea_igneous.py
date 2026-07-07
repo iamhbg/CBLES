@@ -1423,6 +1423,171 @@ def render_sheet_joint_diagram():
     return fig
 
 
+def render_rock_hand_sample_figure(rock_name, sio2, depth_km):
+    """
+    암석 육안 표본(手標本)을 모사한 matplotlib Figure를 절차적으로 생성한다.
+
+    render_grain_texture_figure 가 박편·현미경 스케일(결정 경계 묘사)이라면,
+    이 함수는 야외에서 손에 들고 보는 스케일의 암석 외관을 그린다.
+      - 기본 암석색: SiO₂에 따라 어두운 회색(현무암질) ↔ 밝은 회색-분홍(유문암질)
+      - 광물 패치: 깊이(냉각 속도)에 따라 크기가 달라지는 광물 얼룩 — 지표(세립)는
+        패치가 작아 균일한 질감, 심부(조립)는 패치가 커서 개별 광물이 육안에 보이는 느낌
+      - 반상조직: 1~2 km 구간에서 큰 반정이 세립 바탕 위에 부유하는 형태
+      - 기공(vesicles): 현무암(암질 + 지표 분출) 에만 표현 — 기공은 냉각 위치
+        축에만 의존하므로 두 인과축의 독립성 유지
+      - 조명 하이라이트 + 그림자: 반투명 원으로 단순하게 근사
+    모든 무작위 요소는 (sio2, depth_km) 기반 고정 시드를 써 재실행 시 그림이 바뀌지 않는다.
+    VISUAL_AVAILABLE 이 False 면 None 을 반환한다.
+    """
+    if not VISUAL_AVAILABLE:
+        return None
+
+    fig, ax = plt.subplots(figsize=(3.0, 3.0), dpi=110)
+    fig.patch.set_facecolor('#14141e')
+    ax.set_facecolor('#14141e')
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 10)
+    ax.axis('off')
+    ax.set_aspect('equal')
+
+    # (sio2, depth_km) 기반 고정 시드 (grain_texture 와 겹치지 않도록 오프셋 추가)
+    seed = int(round(sio2 * 10)) * 10_000 + int(round(depth_km * 100)) + 4321
+    rng = np.random.default_rng(seed)
+
+    # ------------------------------------------------------------------
+    # 1. 암석 외형 — 저주파 불규칙 다각형 (손에 들고 보는 돌 조각 느낌)
+    # ------------------------------------------------------------------
+    cx, cy = 5.0, 5.0
+    n_v = 18
+    base_r = 3.5
+    theta = np.linspace(0, 2 * np.pi, n_v, endpoint=False)
+    phase1, phase2, phase3 = rng.uniform(0, 2 * np.pi, 3)
+    perturb = (0.52 * np.sin(2.1 * theta + phase1)
+               + 0.36 * np.sin(3.9 * theta + phase2)
+               + 0.20 * np.sin(5.5 * theta + phase3))
+    radii = base_r + perturb
+    rock_x = cx + radii * np.cos(theta)
+    rock_y = cy + radii * np.sin(theta)
+    rock_verts = list(zip(rock_x.tolist(), rock_y.tolist()))
+
+    # ------------------------------------------------------------------
+    # 2. 기본 암석색 (SiO₂에 따른 명도 연속 보간)
+    # ------------------------------------------------------------------
+    t_color = float(np.clip((sio2 - SIO2_SLIDER_MIN) / (SIO2_SLIDER_MAX - SIO2_SLIDER_MIN), 0.0, 1.0))
+    # 염기성 쪽: 어두운 회갈색 / 산성 쪽: 밝은 회베이지
+    r0 = int(50 + t_color * 148)
+    g0 = int(48 + t_color * 138)
+    b0 = int(45 + t_color * 128)
+    base_color = (r0 / 255, g0 / 255, b0 / 255)
+
+    # 그림자 (약간 어두운 오프셋 다각형)
+    shadow_verts = [(x + 0.28, y - 0.28) for x, y in rock_verts]
+    ax.add_patch(plt.Polygon(shadow_verts, facecolor='#05050c', alpha=0.55, zorder=1))
+
+    # 기본 면
+    rock_patch = plt.Polygon(rock_verts, facecolor=base_color, edgecolor='none', zorder=2)
+    ax.add_patch(rock_patch)
+
+    # ------------------------------------------------------------------
+    # 3. 광물 패치 (grain patches)
+    # ------------------------------------------------------------------
+    t_depth = float(np.clip(depth_km / DEPTH_SLIDER_MAX, 0.0, 1.0))
+    # 평균 패치 반지름: 지표(0.04) → 심부(0.40)
+    mean_gr = 0.04 + 0.38 * (t_depth ** 0.55)
+    # 반상조직 강도: 1.5 km 부근 극대
+    porphyritic = 0.70 * np.exp(-((depth_km - 1.5) / 0.9) ** 2)
+
+    # 광물 조성비 (§2-1 기준과 동일하게 유지)
+    if sio2 <= SIO2_MAFIC_MAX:
+        minerals_modes = [("pyroxene", 0.45), ("olivine", 0.10), ("plagioclase", 0.45)]
+    elif sio2 <= SIO2_FELSIC_MIN:
+        minerals_modes = [("hornblende", 0.25), ("biotite", 0.08),
+                          ("plagioclase", 0.55), ("quartz", 0.12)]
+    else:
+        minerals_modes = [("hornblende", 0.05), ("biotite", 0.10),
+                          ("plagioclase", 0.28), ("k_feldspar", 0.24), ("quartz", 0.33)]
+
+    m_names = [m[0] for m in minerals_modes]
+    m_probs = np.array([m[1] for m in minerals_modes], dtype=float)
+    m_probs /= m_probs.sum()
+
+    # 육안 표본 색 팔레트 (박편보다 약간 탁하고 단순한 느낌)
+    _hand_pal = {
+        "pyroxene":    (40,  37,  33,  12),
+        "hornblende":  (34,  38,  28,  10),
+        "olivine":     (58,  72,  32,  14),
+        "biotite":     (30,  21,  12,  10),
+        "plagioclase": (178, 175, 170, 14),
+        "quartz":      (163, 164, 174, 12),
+        "k_feldspar":  (215, 178, 156, 18),
+    }
+
+    # 패치 개수: 지표는 많이(고운 질감 재현), 심부는 적게(큰 알갱이 재현)
+    n_patches = max(45, int(230 * (1.0 - t_depth * 0.65)))
+    approx_r = base_r - 0.35  # 가우시안 원 근사 (rejection sampling 경계)
+
+    for _ in range(n_patches):
+        # 암석 내부 랜덤 위치 (원 경계 근사)
+        ang_p = rng.uniform(0, 2 * np.pi)
+        dist_p = approx_r * float(np.sqrt(rng.uniform(0, 1)))
+        px = cx + dist_p * np.cos(ang_p)
+        py = cy + dist_p * np.sin(ang_p)
+
+        mineral = str(rng.choice(m_names, p=m_probs))
+        br, bg, bb, var = _hand_pal[mineral]
+        r = int(np.clip(br + rng.integers(-var, var + 1), 0, 255))
+        g = int(np.clip(bg + rng.integers(-var, var + 1), 0, 255))
+        b = int(np.clip(bb + rng.integers(-var, var + 1), 0, 255))
+        col = (r / 255, g / 255, b / 255)
+
+        gr = mean_gr * float(rng.uniform(0.40, 2.00))
+        if float(rng.random()) < porphyritic * 0.12:
+            gr *= 3.0  # 반정: 훨씬 큰 패치
+
+        n_s = int(rng.integers(4, 8))
+        ang_off = float(rng.uniform(0, 2 * np.pi))
+        asp = float(rng.uniform(0.55, 1.50))
+        vx2 = px + gr * asp * np.cos(np.linspace(0, 2 * np.pi, n_s, endpoint=False) + ang_off)
+        vy2 = py + gr * np.sin(np.linspace(0, 2 * np.pi, n_s, endpoint=False) + ang_off)
+        patch = plt.Polygon(list(zip(vx2.tolist(), vy2.tolist())),
+                            facecolor=col, edgecolor='none', alpha=0.82, zorder=3)
+        patch.set_clip_path(rock_patch)
+        ax.add_patch(patch)
+
+    # ------------------------------------------------------------------
+    # 4. 기공 (vesicles) — 현무암이 지표 분출할 때만 표시
+    #    기공은 냉각 위치 축에만 의존 (조성 축과 독립 — 두 인과축 분리 유지)
+    # ------------------------------------------------------------------
+    if rock_name == "현무암" and depth_km < 1.0:
+        vesicle_density = float(np.clip(1.0 - depth_km, 0.0, 1.0))
+        n_vesicles = int(round(float(rng.integers(5, 16)) * vesicle_density))
+        for _ in range(n_vesicles):
+            ang_v = float(rng.uniform(0, 2 * np.pi))
+            dist_v = float(rng.uniform(0, approx_r * 0.90))
+            vx_v = cx + dist_v * np.cos(ang_v)
+            vy_v = cy + dist_v * np.sin(ang_v)
+            vr = float(rng.uniform(0.08, 0.26))
+            hole = plt.Circle((vx_v, vy_v), vr,
+                               facecolor='#050508', edgecolor='#2e2e38',
+                               linewidth=0.5, alpha=0.92, zorder=4)
+            hole.set_clip_path(rock_patch)
+            ax.add_patch(hole)
+
+    # ------------------------------------------------------------------
+    # 5. 조명 하이라이트 + 테두리
+    # ------------------------------------------------------------------
+    highlight = plt.Circle((cx - 1.0, cy + 1.3), 2.2,
+                            facecolor='white', alpha=0.055, zorder=5, edgecolor='none')
+    highlight.set_clip_path(rock_patch)
+    ax.add_patch(highlight)
+
+    ax.add_patch(plt.Polygon(rock_verts, facecolor='none',
+                              edgecolor='#50505c', linewidth=0.9, zorder=6))
+
+    fig.tight_layout(pad=0)
+    return fig
+
+
 # ==============================================================================
 # 4. Gemini API 연동 로직
 # ==============================================================================
@@ -1756,28 +1921,29 @@ def render_simulator(results):
         unsafe_allow_html=True,
     )
 
-    # --- 결정 알갱이(조직) 시각화 -----------------------------------------------
+    # --- 결정 알갱이(조직) 시각화 + 육안 표본 그림 --------------------------------
     if VISUAL_AVAILABLE:
         grain_fig = render_grain_texture_figure(results["sio2"], results["depth_km"])
-        _specimen_path = _get_rock_specimen_image(results.get("rock_name", ""))
-        if _specimen_path:
-            # 모식도(좌) + 육안 표본 사진(우) 나란히
-            diag_col, photo_col = st.columns([1, 1])
-            with diag_col:
-                st.pyplot(grain_fig, use_container_width=True)
-            with photo_col:
-                st.image(
-                    _specimen_path,
-                    use_container_width=True,
-                    caption=f"{results['rock_name']} 육안 표본 (참고)",
-                )
-        else:
+        rock_name = results.get("rock_name", "")
+        # 육안 표본: 실제 사진이 있으면 사진 우선, 없으면 절차적 생성 그림 사용
+        _specimen_path = _get_rock_specimen_image(rock_name)
+        diag_col, sample_col = st.columns([1, 1])
+        with diag_col:
             st.pyplot(grain_fig, use_container_width=True)
-        # 캡션은 항상 그림 아래에
+        with sample_col:
+            if _specimen_path:
+                st.image(_specimen_path, use_container_width=True)
+            else:
+                sample_fig = render_rock_hand_sample_figure(
+                    rock_name, results["sio2"], results["depth_km"]
+                )
+                if sample_fig is not None:
+                    st.pyplot(sample_fig, use_container_width=True)
+                    plt.close(sample_fig)
+        # 캡션은 항상 두 그림 아래에
         st.caption(
-            "🔬 결정 알갱이 모식도(참고용) — **색**은 SiO₂ 함량(마그마 조성), "
-            "**알갱이 크기·균일도**는 냉각 깊이에 따라 연속적으로 변합니다. "
-            "분류 라벨(세립질/반상질/조립질 등)은 위 텍스트의 단계 기준을 그대로 따릅니다."
+            "🔬 결정 알갱이 모식도(좌, 현미경 스케일) · 육안 표본 모식도(우) — "
+            "**색**은 SiO₂ 함량(마그마 조성), **알갱이 크기**는 냉각 깊이에 따라 변합니다."
         )
         plt.close(grain_fig)  # 재실행마다 Figure가 누적되지 않도록 명시적으로 해제
     else:
