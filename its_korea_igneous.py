@@ -23,7 +23,6 @@
 """
 
 import os
-import requests
 import streamlit as st
 
 # ------------------------------------------------------------------------------
@@ -400,18 +399,12 @@ def get_korea_context(rock_name):
             "emphasized": True,
             "photos": [
                 {
-                    "url": (
-                        "https://upload.wikimedia.org/wikipedia/commons/"
-                        "d/d1/Daepo_Jusangjeolli_Cliff_02.jpg"
-                    ),
+                    "path": "images/basalt_jusangjeolli.jpg",
                     "caption": "제주 중문대포 주상절리대 — 현무암 용암이 급랭·수축하며 만들어진 6각형 기둥들",
                     "license": "CC0 (Bernard Gagnon, Wikimedia Commons)",
                 },
                 {
-                    "url": (
-                        "https://upload.wikimedia.org/wikipedia/commons/"
-                        "d/de/Seongsan_Ilchulbong_from_the_ocean.jpg"
-                    ),
+                    "path": "images/basalt_seongsan.jpg",
                     "caption": "제주 성산일출봉 — 수성화산 활동으로 쌓인 현무암질 응회구 (유네스코 세계자연유산)",
                     "license": "CC BY-SA 3.0 (Yoo Chung, Wikimedia Commons)",
                 },
@@ -439,18 +432,12 @@ def get_korea_context(rock_name):
             "emphasized": True,
             "photos": [
                 {
-                    "url": (
-                        "https://upload.wikimedia.org/wikipedia/commons/"
-                        "5/56/Insubong_Peak_of_Bukhansan_in_spring_in_Korea.jpg"
-                    ),
+                    "path": "images/granite_insubong.jpg",
                     "caption": "북한산 인수봉 — 중생대에 지하에서 굳은 화강암이 융기·삭박으로 드러난 절벽",
                     "license": "CC0 (Wikimedia Commons)",
                 },
                 {
-                    "url": (
-                        "https://upload.wikimedia.org/wikipedia/commons/"
-                        "8/8a/Ulsanbawi%28rock%29_%EC%9A%B8%EC%82%B0%EB%B0%94%EC%9C%84.jpg"
-                    ),
+                    "path": "images/granite_ulsanbawi.jpg",
                     "caption": "설악산 울산바위 — 화강암 절벽에 판상 절리가 발달한 대보 화강암 지형",
                     "license": "CC BY-SA 2.0 (Tom Page, Wikimedia Commons)",
                 },
@@ -578,29 +565,6 @@ def compute_simulation(sio2, depth_km):
         "landmarks": korea["landmarks"],
     }
     return results
-
-
-@st.cache_data(show_spinner=False)
-def _fetch_photo_bytes(url: str) -> bytes | None:
-    """
-    Wikimedia 이미지 URL을 서버 측에서 다운로드해 bytes로 반환한다.
-    st.image("url") 방식은 CDN 차단이 있어, requests로 직접 가져와 bytes를 넘긴다.
-    @st.cache_data 로 세션·재실행 간 재다운로드를 방지한다.
-    """
-    try:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            )
-        }
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            return resp.content
-    except Exception:
-        pass
-    return None
 
 
 def _clip_polygon_to_unit_square(poly_points):
@@ -1498,11 +1462,7 @@ def render_simulator(results):
             photo_cols = st.columns(len(results["photos"]))
             for col, photo in zip(photo_cols, results["photos"]):
                 with col:
-                    img_bytes = _fetch_photo_bytes(photo["url"])
-                    if img_bytes:
-                        st.image(img_bytes, caption=photo["caption"], use_container_width=True)
-                    else:
-                        st.markdown(f"*{photo['caption']}*\n*(이미지 로딩 실패)*")
+                    st.image(photo["path"], caption=photo["caption"], use_container_width=True)
                     st.caption(f"출처: {photo['license']}")
             st.divider()
         for item in results["landmarks"]:
