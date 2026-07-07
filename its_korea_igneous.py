@@ -1702,6 +1702,22 @@ def render_curriculum_header():
         )
 
 
+def _get_rock_specimen_image(rock_name):
+    """암석 이름에 대응하는 육안 표본 이미지 경로를 반환한다. 파일이 없으면 None."""
+    _specimen_map = {
+        "현무암": "images/specimen_basalt.jpg",
+        "화강암": "images/specimen_granite.jpg",
+        "반려암": "images/specimen_gabbro.jpg",
+        "안산암": "images/specimen_andesite.jpg",
+        "유문암": "images/specimen_rhyolite.jpg",
+        "섬록암": "images/specimen_diorite.jpg",
+    }
+    path = _specimen_map.get(rock_name)
+    if path and os.path.exists(path):
+        return path
+    return None
+
+
 def render_simulator(results):
     """좌측 시뮬레이터의 동적 결과를 Markdown UI로 시각화한다."""
     st.subheader("🌋 화성암 형성 시뮬레이터")
@@ -1743,15 +1759,26 @@ def render_simulator(results):
     # --- 결정 알갱이(조직) 시각화 -----------------------------------------------
     if VISUAL_AVAILABLE:
         grain_fig = render_grain_texture_figure(results["sio2"], results["depth_km"])
-        img_col, caption_col = st.columns([1, 1.4])
-        with img_col:
+        _specimen_path = _get_rock_specimen_image(results.get("rock_name", ""))
+        if _specimen_path:
+            # 모식도(좌) + 육안 표본 사진(우) 나란히
+            diag_col, photo_col = st.columns([1, 1])
+            with diag_col:
+                st.pyplot(grain_fig, use_container_width=True)
+            with photo_col:
+                st.image(
+                    _specimen_path,
+                    use_container_width=True,
+                    caption=f"{results['rock_name']} 육안 표본 (참고)",
+                )
+        else:
             st.pyplot(grain_fig, use_container_width=True)
-        with caption_col:
-            st.caption(
-                "🔬 결정 알갱이 모식도(참고용) — **색**은 SiO2 함량(마그마 조성), "
-                "**알갱이 크기·균일도**는 냉각 깊이에 따라 연속적으로 변합니다. "
-                "분류 라벨(세립질/반상질/조립질 등)은 위 텍스트의 단계 기준을 그대로 따릅니다."
-            )
+        # 캡션은 항상 그림 아래에
+        st.caption(
+            "🔬 결정 알갱이 모식도(참고용) — **색**은 SiO₂ 함량(마그마 조성), "
+            "**알갱이 크기·균일도**는 냉각 깊이에 따라 연속적으로 변합니다. "
+            "분류 라벨(세립질/반상질/조립질 등)은 위 텍스트의 단계 기준을 그대로 따릅니다."
+        )
         plt.close(grain_fig)  # 재실행마다 Figure가 누적되지 않도록 명시적으로 해제
     else:
         st.caption(
