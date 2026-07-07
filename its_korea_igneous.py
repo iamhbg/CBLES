@@ -397,6 +397,26 @@ def get_korea_context(rock_name):
             "structure": "주상 절리 ─ 용암이 빠르게 식으며 부피가 수축해 만들어진 "
                          "다각형 기둥 모양의 절리(화산암에서 잘 발달).",
             "emphasized": True,
+            "photos": [
+                {
+                    "url": (
+                        "https://upload.wikimedia.org/wikipedia/commons/thumb/"
+                        "d/d1/Daepo_Jusangjeolli_Cliff_02.jpg/"
+                        "800px-Daepo_Jusangjeolli_Cliff_02.jpg"
+                    ),
+                    "caption": "제주 중문대포 주상절리대 — 현무암 용암이 급랭·수축하며 만들어진 6각형 기둥들",
+                    "license": "CC0 (Bernard Gagnon, Wikimedia Commons)",
+                },
+                {
+                    "url": (
+                        "https://upload.wikimedia.org/wikipedia/commons/thumb/"
+                        "d/de/Seongsan_Ilchulbong_from_the_ocean.jpg/"
+                        "800px-Seongsan_Ilchulbong_from_the_ocean.jpg"
+                    ),
+                    "caption": "제주 성산일출봉 — 수성화산 활동으로 쌓인 현무암질 응회구 (유네스코 세계자연유산)",
+                    "license": "CC BY-SA 3.0 (Yoo Chung, Wikimedia Commons)",
+                },
+            ],
             "landmarks": [
                 "**제주 중문대포 주상절리대** — 수십만 년 전 현무암질 용암이 바다와 만나 급랭하며 "
                 "수축·균열된 6각형 기둥이 해안 절벽을 이룸.",
@@ -418,6 +438,26 @@ def get_korea_context(rock_name):
             "structure": "판상 절리 ─ 지하 심부의 암석이 융기·삭박으로 압력이 감소하며 "
                          "만들어진 얇은 판 모양의 절리(심성암에서 잘 발달).",
             "emphasized": True,
+            "photos": [
+                {
+                    "url": (
+                        "https://upload.wikimedia.org/wikipedia/commons/thumb/"
+                        "5/56/Insubong_Peak_of_Bukhansan_in_spring_in_Korea.jpg/"
+                        "800px-Insubong_Peak_of_Bukhansan_in_spring_in_Korea.jpg"
+                    ),
+                    "caption": "북한산 인수봉 — 중생대에 지하에서 굳은 화강암이 융기·삭박으로 드러난 절벽",
+                    "license": "CC0 (Wikimedia Commons)",
+                },
+                {
+                    "url": (
+                        "https://upload.wikimedia.org/wikipedia/commons/thumb/"
+                        "8/8a/Ulsanbawi%28rock%29_%EC%9A%B8%EC%82%B0%EB%B0%94%EC%9C%84.jpg/"
+                        "800px-Ulsanbawi%28rock%29_%EC%9A%B8%EC%82%B0%EB%B0%94%EC%9C%84.jpg"
+                    ),
+                    "caption": "설악산 울산바위 — 화강암 절벽에 판상 절리가 발달한 대보 화강암 지형",
+                    "license": "CC BY-SA 2.0 (Tom Page, Wikimedia Commons)",
+                },
+            ],
             "landmarks": [
                 "**북한산 인수봉(서울·경기)** — 중생대에 지하에서 굳은 화강암이 융기·삭박으로 "
                 "드러난 절벽. 판상 절리가 발달해 있음.",
@@ -437,6 +477,7 @@ def get_korea_context(rock_name):
             "structure": "중성 화산암(분류표 기준) — 교과서 대표 사례는 현무암·화강암이며, "
                          "안산암은 분류표 학습용으로 다룹니다.",
             "emphasized": False,
+            "photos": [],
             "landmarks": [
                 "**울릉도(조면안산암)** — 울릉도의 암석은 엄밀히는 알칼리성 '조면안산암' 계열로, "
                 "안산암질 화성암의 한 종류. 나리분지 알봉이 대표적.",
@@ -454,6 +495,7 @@ def get_korea_context(rock_name):
             "structure": "산성 화산암(분류표 기준) — 유문암질 마그마의 냉각 위치에 따라 "
                          "지표→유문암, 지하→화강암으로 나뉩니다.",
             "emphasized": False,
+            "photos": [],
             "landmarks": [
                 "**한라산 모세왓(제주, 천연기념물 제455호)** — 한라산 백록담 남서쪽에 약 2.3 km "
                 "구간의 유문암질 각력암 지대. 일반적인 관광 명소보다는 지질학적 명소에 가까움.",
@@ -471,6 +513,7 @@ def get_korea_context(rock_name):
             "structure": "염기성 심성암(분류표 기준) — 지표에서는 현무암, 지하에서는 "
                          "반려암이 됩니다.",
             "emphasized": False,
+            "photos": [],
             "landmarks": [
                 "한반도에서 반려암이 대규모로 노출되어 관광 명소가 된 사례는 거의 없습니다.",
                 "**강원 화천·경기 양평** 등 일부 지역에 소규모 관입체로 분포하나, "
@@ -487,6 +530,7 @@ def get_korea_context(rock_name):
             "structure": "중성 심성암(분류표 기준) — 지표에서는 안산암, 지하에서는 "
                          "섬록암이 됩니다.",
             "emphasized": False,
+            "photos": [],
             "landmarks": [
                 "**경북 영덕 해안(동해안 국가지질공원)** — '화강섬록암' 해안으로, "
                 "섬록암보다 산성 성분이 약간 높은 중간 계열 심성암. 해식애·파식대지 등 "
@@ -533,6 +577,7 @@ def compute_simulation(sio2, depth_km):
         "process": korea["process"],
         "structure": korea["structure"],
         "emphasized": korea["emphasized"],
+        "photos": korea["photos"],
         "landmarks": korea["landmarks"],
     }
     return results
@@ -1429,6 +1474,13 @@ def render_simulator(results):
         else "📍 한반도 산출 현황 안내",
         expanded=results["emphasized"],
     ):
+        if results["photos"]:
+            photo_cols = st.columns(len(results["photos"]))
+            for col, photo in zip(photo_cols, results["photos"]):
+                with col:
+                    st.image(photo["url"], caption=photo["caption"], use_container_width=True)
+                    st.caption(f"출처: {photo['license']}")
+            st.divider()
         for item in results["landmarks"]:
             st.markdown(f"- {item}")
 
