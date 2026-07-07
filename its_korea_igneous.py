@@ -99,8 +99,28 @@ SIO2_SLIDER_MAX = 75.0
 DEPTH_SLIDER_MAX = 12.0
 
 # 결정 텍스처 시각화용 색상 (연속 보간 양 끝값 — §2-1 염기성/산성의 대표색)
-MAFIC_RGB = (61, 58, 58)        # 어두운색(현무암질) 대표색
-FELSIC_RGB = (230, 219, 194)    # 밝은색(유문암질) 대표색
+MAFIC_RGB = (61, 58, 58)        # 어두운색(현무암질) 대표색 — 배경색에만 사용
+FELSIC_RGB = (230, 219, 194)    # 밝은색(유문암질) 대표색 — 배경색에만 사용
+
+# 광물별 특성 색 팔레트 (PPL 박편/육안 기준, (기반R, 기반G, 기반B, 개체별_변동폭) 정수 0~255)
+# XPL 간섭색(무지개색 등)이 아닌 실제 육안/PPL 수준 색을 단순화해 교육용으로 표현한다.
+# 어두운 광물(휘석·각섬석·흑운모)과 밝은 광물(사장석·석영·정장석)의 명암 대비가 핵심.
+_MINERAL_PALETTE = {
+    "pyroxene":    ( 54,  51,  46, 18),   # 암회색~흑색 (휘석)
+    "hornblende":  ( 46,  51,  40, 15),   # 암녹흑색 (각섬석)
+    "olivine":     ( 90, 102,  50, 22),   # 암녹황색 (감람석)
+    "biotite":     ( 74,  52,  22, 18),   # 암갈색 (흑운모)
+    "plagioclase": (198, 196, 192, 36),   # 회백색 (사장석)
+    "quartz":      (186, 186, 198, 30),   # 회색 (석영)
+    "k_feldspar":  (220, 202, 184, 32),   # 분홍백색 (정장석)
+    "glass":       ( 37,  34,  32,  8),   # 유리질 — 거의 흑색
+}
+# SiO2 구간별 광물 조성비 — 광물학 비율을 교육 목적으로 단순화
+_MINERAL_MODES = {
+    "mafic":        [("pyroxene", 0.40), ("olivine", 0.10), ("plagioclase", 0.50)],
+    "intermediate": [("hornblende", 0.22), ("biotite", 0.08), ("plagioclase", 0.55), ("quartz", 0.15)],
+    "felsic":       [("hornblende", 0.05), ("biotite", 0.10), ("plagioclase", 0.28), ("k_feldspar", 0.24), ("quartz", 0.33)],
+}
 
 # 교육과정 메타데이터 (UI 상단 표시용)
 CURRICULUM_META = {
@@ -771,6 +791,58 @@ def _sample_phenocryst_centers(n_phenocrysts, exclusion_radius, rng, max_attempt
     return np.array(centers) if centers else np.empty((0, 2))
 
 
+def _assign_mineral_colors(n_total, is_phenocryst, is_glass_by_point, sio2, seed):
+    """
+    각 알갱이에 광물 종류를 배정하고 그 광물의 특성 색(0~1 RGB 튜플 리스트)을 반환한다.
+
+    실제 암석에서는 어두운 광물(휘석·각섬석·흑운모)과 밝은 광물(사장석·석영·정장석)이
+    한 시야 안에 섞여 높은 명암 대비를 만든다. 이전 방식(SiO2 보간 단일 기준색 ± 명암)은
+    이 대비를 표현하지 못해, _MINERAL_MODES 의 SiO2 구간별 조성비로 각 알갱이에 광물을
+    배정하고 _MINERAL_PALETTE 의 특성 색에 개체별 무작위 편차를 더해 최종 색을 결정한다.
+
+    * 유리질 알갱이 : 광물 배정 없이 흑색("glass") 고정
+    * 반정(phenocryst): 해당 SiO2 구간의 전형적 반정 광물 분포에서 배정
+    * 석기(matrix) : SiO2 구간별 _MINERAL_MODES 에서 무작위 배정
+    * 같은 (sio2, seed) 조합이면 항상 같은 배정(결정론적 시드)
+    """
+    if sio2 <= SIO2_MAFIC_MAX:
+        matrix_mode = _MINERAL_MODES["mafic"]
+        # 염기성 반정: 감람석(고온 조기 결정) + 사장석
+        pheno_mode = [("olivine", 0.35), ("pyroxene", 0.10), ("plagioclase", 0.55)]
+    elif sio2 < SIO2_FELSIC_MIN:
+        matrix_mode = _MINERAL_MODES["intermediate"]
+        # 중성 반정: 사장석이 직사각형 라스(lath) 형태로 두드러지는 전형적 안산암 조직
+        pheno_mode = [("hornblende", 0.10), ("plagioclase", 0.90)]
+    else:
+        matrix_mode = _MINERAL_MODES["felsic"]
+        # 산성 반정: 석영·정장석(육각형~사각형 결정)
+        pheno_mode = [("quartz", 0.42), ("k_feldspar", 0.58)]
+
+    m_names = [name for name, _ in matrix_mode]
+    m_probs = np.array([prob for _, prob in matrix_mode], dtype=float)
+    m_probs /= m_probs.sum()
+
+    p_names = [name for name, _ in pheno_mode]
+    p_probs = np.array([prob for _, prob in pheno_mode], dtype=float)
+    p_probs /= p_probs.sum()
+
+    color_rng = np.random.default_rng(seed=seed ^ 0xA3B4C5D6)
+    grain_colors = []
+    for i in range(n_total):
+        if is_glass_by_point[i]:
+            mineral = "glass"
+        elif is_phenocryst[i]:
+            mineral = str(color_rng.choice(p_names, p=p_probs))
+        else:
+            mineral = str(color_rng.choice(m_names, p=m_probs))
+        base_r, base_g, base_b, var = _MINERAL_PALETTE[mineral]
+        r = int(np.clip(base_r + color_rng.integers(-var, var + 1), 0, 255))
+        g = int(np.clip(base_g + color_rng.integers(-var, var + 1), 0, 255))
+        b = int(np.clip(base_b + color_rng.integers(-var, var + 1), 0, 255))
+        grain_colors.append((r / 255.0, g / 255.0, b / 255.0))
+    return grain_colors
+
+
 def render_grain_texture_figure(sio2, depth_km):
     """
     SiO2 함량·냉각 깊이로부터 결정 알갱이(조직)를 절차적으로 그린 모식도를 생성한다.
@@ -789,7 +861,10 @@ def render_grain_texture_figure(sio2, depth_km):
     타형(불규칙한 면)이 섞여 나타나는 실제 결정형을 반영하지 못했고, 모든
     조직이 100% 결정질이라고 가정해 급랭 시 생기는 유리질(비정질)도 빠져
     있었다(사용자 피드백 반영).
-      - 색: SiO2 값을 SIO2_SLIDER_MIN~MAX 구간에서 MAFIC_RGB↔FELSIC_RGB로 선형 보간.
+      - 색: _MINERAL_PALETTE 의 광물별 특성 색을 _MINERAL_MODES 의 SiO2 구간별 조성비로
+        각 알갱이에 배정(_assign_mineral_colors)한다. 어두운 광물(휘석·각섬석·흑운모) ↔
+        밝은 광물(사장석·석영·정장석)의 명암 대비로 실제 암석 박편에 가까운 색감을 낸다.
+        MAFIC_RGB/FELSIC_RGB 는 배경 직사각형(바탕색)에만 사용한다.
       - 알갱이 밀도(개수): 깊이가 깊을수록(냉각이 느릴수록) 평균 알갱이 크기가
         커지도록 알갱이 "개수"를 연속적으로 줄인다(보로노이 셀 평균 면적 ≈
         1/개수 관계 이용) — 알갱이 크기와 무관하게 항상 면 전체가 채워진다.
@@ -940,6 +1015,8 @@ def render_grain_texture_figure(sio2, depth_km):
 
     cell_polygons, cell_neighbors = _voronoi_cells_with_neighbors(all_points)
 
+    grain_colors = _assign_mineral_colors(n_total, is_phenocryst, is_glass_by_point, sio2, seed)
+
     # 굴곡 폭(변 끝점 사이 거리에 대한 비율). low=결정면처럼 거의 곧음,
     # high=이웃에 밀려난 불규칙한 면, glass=결정 구조가 없는 유리질의 매끈한 경계.
     # (이전에 0.05~0.31 폭을 쓴 적이 있었는데 모든 변이 동시에 부풀어 다각형이
@@ -959,7 +1036,6 @@ def render_grain_texture_figure(sio2, depth_km):
     # 스타일별로 LineCollection 으로 묶어 한 번에 그린다(개별 ax.plot 수천 번보다 훨씬 빠름).
     bold_segments, medium_segments, faint_segments, glass_segments = [], [], [], []
 
-    shade_rng = np.random.default_rng(seed=seed ^ 0x5BD1E995)
     for i in range(n_total):
         poly_pts = cell_polygons[i]
         if poly_pts is None or len(poly_pts) < 3:
@@ -970,15 +1046,7 @@ def render_grain_texture_figure(sio2, depth_km):
         )
         if wavy_poly is None or len(wavy_poly) < 3:
             continue
-        if is_phenocryst[i]:
-            # 반정(큰 결정)은 바탕(석기)보다 명암 편차를 줄여 더 "또렷한 낱개 결정" 느낌을 준다.
-            shade = shade_rng.uniform(-0.10, 0.10)
-        elif is_glass_by_point[i]:
-            # 유리질은 광학적으로 더 균질해 보이므로 알갱이별 명암 편차를 더 옅게.
-            shade = shade_rng.uniform(-0.07, 0.07)
-        else:
-            shade = shade_rng.uniform(-0.18, 0.18)
-        grain_rgb = tuple(min(max(c + shade, 0.0), 1.0) for c in bg_rgb)
+        grain_rgb = grain_colors[i]
         # 채우기 색과 같은 색으로 아주 얇게 테두리를 둘러, 이웃 셀과 좌표가
         # 정확히 맞물려 있어도 안티앨리어싱 때문에 생기는 미세한 이음매를 가린다
         # (실제 굴곡 스타일 선은 아래에서 별도로 덧그린다).

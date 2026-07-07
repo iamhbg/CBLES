@@ -92,7 +92,8 @@
 - **`.env` 로딩**: 앱 시작 시 `python-dotenv`의 `load_dotenv()`로 `.env`의 `GEMINI_API_KEY`를 `os.environ`에 적용한다(같은 패턴으로 `python-dotenv` 미설치 시에도 죽지 않게 try/except 처리). 이는 위 우선순위의 "환경변수" 단계를 채우는 로컬 전용 경로다. **`.env`는 절대 커밋하지 않는다**(`.gitignore`에 명시됨). 키 예시 형식은 `.env.example`에 둔다. **Streamlit Cloud 배포 시에는 `.env`가 서버에 존재하지 않으므로, 앱 대시보드의 Secrets에 `GEMINI_API_KEY`를 설정해야 `st.secrets` 경로로 키가 공급된다.**
 - **한국어 유지**: 주석·UI 문자열은 한국어로.
 - `st.chat_input`은 컬럼 밖(앱 루트 최하단)에 둔다 — Streamlit 배치 제약(컬럼 안에 넣어도 항상 앱 맨 아래 전체 폭에 고정됨) 때문. 컬럼 안으로 옮기지 말 것. 대신 `inject_custom_css()`에서 `[data-testid="stBottomBlockContainer"]`를 `width: calc(50% - 1rem)` + `margin-left: auto`로 강제해 시각적으로 우측(AI 튜터) 컬럼 폭에 맞춘다. **이 testid는 Streamlit 내부 구현이라 버전이 바뀌면 깨질 수 있음** — 업그레이드 후 채팅 입력창이 다시 전체 폭으로 펼쳐지면 이 선택자부터 확인할 것.
-- **결정 텍스처(조직) 시각화**: `render_grain_texture_figure()`가 SiO2·깊이로부터 matplotlib Figure를 절차적으로 생성한다(`VISUAL_AVAILABLE` 플래그로 numpy/matplotlib 누락 시 우아하게 degrade — 그림 없이 텍스트만 표시). **그림의 색·알갱이 크기·알갱이 모양은 연속 보간**이지만 **텍스트 분류 라벨(세립질/반상질/조립질, 현무암질/유문암질 등)은 §2의 단계적 임계값을 그대로 따른다** — 이 함수가 분류 자체를 바꾸지 않도록 주의. 알갱이 생성에는 `(sio2, depth_km)` 기반 고정 시드를 써서 재실행 시 그림이 깜빡이지 않게 한다.
+- **결정 텍스처(조직) 시각화**: `render_grain_texture_figure()`가 SiO2·깊이로부터 matplotlib Figure를 절차적으로 생성한다(`VISUAL_AVAILABLE` 플래그로 numpy/matplotlib 누락 시 우아하게 degrade — 그림 없이 텍스트만 표시). **텍스트 분류 라벨(세립질/반상질/조립질, 현무암질/유문암질 등)은 §2의 단계적 임계값을 그대로 따른다** — 이 함수가 분류 자체를 바꾸지 않도록 주의. 알갱이 생성에는 `(sio2, depth_km)` 기반 고정 시드를 써서 재실행 시 그림이 깜빡이지 않게 한다.
+  - **알갱이 색**: 단일 기준색 보간이 아닌 **광물별 특성 색** 방식. `_MINERAL_PALETTE`(광물명→PPL/육안 기준 RGB 기반색+변동폭)와 `_MINERAL_MODES`(SiO2 구간→광물 조성비)를 정의하고, `_assign_mineral_colors()`로 각 알갱이에 광물 종류를 배정한다. 어두운 광물(휘석·각섬석·흑운모) ↔ 밝은 광물(사장석·석영·정장석)의 명암 대비로 실제 암석 박편에 가까운 시각 효과를 낸다. `MAFIC_RGB`/`FELSIC_RGB`는 배경(바탕) 직사각형 색에만 사용한다. **XPL 간섭색(무지개·파랑 등)은 표현하지 않는다** — XPL 색은 광학 현상으로 육안/PPL 수준의 교육 시각화와 어긋나 오개념을 만든다.
   - **알갱이는 원이 아니라 Polygon(다각형)으로 그린다.** 단순 원은 결정형(자형/반자형/타형) 개념과 어긋나 오개념을 만든다는 사용자 피드백으로 변경됨. 깊이가 깊을수록(냉각 느림) 꼭짓점이 적고 변이 곧은 **각진 다각형**(자형에 가까움) 비율이, 얕을수록(냉각 빠름) 꼭짓점이 많고 저주파 곡선으로 뭉갠 **둥근 불규칙 다각형**(타형에 가까움) 비율이 높아지도록 알갱이별 `irregularity` 값을 깊이 기반 평균 + 개체별 무작위 편차로 계산한다(한 그림 안에 자형~타형이 섞이는 실제 암석 모습 재현).
   - **"자형/반자형/타형" 용어 자체는 학생에게 노출하지 않는다** — [12지구02-03]은 결정형 분류를 다루지 않으므로 §1의 교육과정 경계 밖이다. 그림의 모양만 사실에 가깝게 그리고, 캡션·시스템 프롬프트에 이 용어를 추가하지 말 것(사용자 확인 완료 사항). 용어를 노출하려면 먼저 사용자에게 다시 확인.
   - **타형을 그릴 때 꼭짓점별 독립 난수로 반지름을 흔들지 말 것** — 적은 꼭짓점 수와 결합하면 별(star) 모양처럼 뾰족해져 더 부자연스러워진다(실제로 겪은 회귀). 인접 꼭짓점이 매끄럽게 이어지는 저주파 사인 합(`smooth_bulge`, k=2~4 정도)을 써서 둥글게 뭉개진 윤곽을 만들 것.
@@ -111,8 +112,8 @@
 
 ## 6. 코드 지도 (단일 파일 내 책임 영역)
 
-- **설정/상수**: `DEFAULT_MODEL`, `SELECTABLE_MODELS`, SiO₂·깊이 임계 상수, `MAFIC_RGB`/`FELSIC_RGB`(텍스처 시각화 색), `SYSTEM_PROMPT`
-- **시뮬레이터 코어**: `classify_magma_composition` · `infer_generation_environment` · `classify_cooling` · `determine_rock_name` · `get_korea_context` · `compute_simulation` · `render_grain_texture_figure`(결정 텍스처 시각화, `VISUAL_AVAILABLE`일 때만)
+- **설정/상수**: `DEFAULT_MODEL`, `SELECTABLE_MODELS`, SiO₂·깊이 임계 상수, `MAFIC_RGB`/`FELSIC_RGB`(배경색), `_MINERAL_PALETTE`/`_MINERAL_MODES`(광물별 특성 색·조성비), `SYSTEM_PROMPT`
+- **시뮬레이터 코어**: `classify_magma_composition` · `infer_generation_environment` · `classify_cooling` · `determine_rock_name` · `get_korea_context` · `compute_simulation` · `render_grain_texture_figure`(결정 텍스처 시각화, `VISUAL_AVAILABLE`일 때만) / 시각화 헬퍼: `_assign_mineral_colors` · `_voronoi_cells_with_neighbors` · `_resolve_edge_amplitude` · `_wavy_edge_points` · `_build_wavy_polygon` · `_jittered_grid_points` · `_sample_phenocryst_centers`
 - **Gemini 연동**: `resolve_api_key` · `build_simulator_context` · `convert_history_for_gemini` · `request_tutor_reply`
 - **UI**: `inject_custom_css` · `render_sidebar` · `render_curriculum_header` · `render_simulator` · `render_chat_panel` · `main`
 
